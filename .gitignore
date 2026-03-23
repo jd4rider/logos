@@ -1,0 +1,6 @@
+.env
+**/node_modules/
+**/dist/
+**/*.sum
+go.work.sum
+wails/build/

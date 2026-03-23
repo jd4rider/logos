@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    background-color: #0d0d1a;
+    color: #e8e6d9;
+    font-family: Georgia, Cambria, 'Times New Roman', serif;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #1a1a2e;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a2a4a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #d4af37;
+  }
+}
+
+@layer components {
+  .verse-text { @apply text-text leading-relaxed; }
+  .verse-num { @apply text-gold font-bold text-sm; }
+  .word-highlight { @apply bg-gold text-bg font-bold; }
+}
