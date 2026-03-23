@@ -12,6 +12,7 @@ import (
 	"github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/api"
 	localdb "github.com/jd4rider/logos/internal/db"
+	"github.com/jd4rider/logos/internal/precache"
 	coretts "github.com/jd4rider/logos/internal/tts"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -60,6 +61,7 @@ type importDoneMsg struct {
 
 // precache messages
 type precacheProgressMsg struct {
+	ch        <-chan precache.Progress
 	bookName  string
 	chapterID string
 	done      int
@@ -177,8 +179,9 @@ type Model struct {
 	inSearch bool
 
 	// Misc
-	loading bool
-	err     error
+	loading   bool
+	err       error
+	statusMsg string // transient status bar message (e.g. precache progress)
 }
 
 func NewModel(client *api.Client, ttsEngine *coretts.Engine, initialBibleID string) Model {
@@ -422,6 +425,37 @@ func (m Model) cmdSearch(query string) tea.Cmd {
 
 // ── Update ────────────────────────────────────────────────────────────────────
 
+// cmdStartPrecache kicks off a background TTS pre-cache job and returns the
+// first progress message via the BubbleTea event loop.
+func (m Model) cmdStartPrecache(translationID string) tea.Cmd {
+	job := precache.NewJob(m.localDB, m.tts, translationID)
+	job.Start()
+	ch := job.Progress()
+	return m.cmdWaitPrecache(ch)
+}
+
+// cmdWaitPrecache reads the next event from a running precache job channel.
+func (m Model) cmdWaitPrecache(ch <-chan precache.Progress) tea.Cmd {
+	return func() tea.Msg {
+		p, ok := <-ch
+		if !ok || p.Finished {
+			tid := ""
+			if ok {
+				tid = p.TranslationID
+			}
+			return precacheDoneMsg{translationID: tid}
+		}
+		return precacheProgressMsg{
+			ch:        ch,
+			bookName:  p.BookName,
+			chapterID: p.ChapterID,
+			done:      p.Done,
+			total:     p.Total,
+			err:       p.Err,
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -580,6 +614,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
+
+	// ── Precache progress messages ────────────────────────────────────────────
+
+	case precacheProgressMsg:
+		if msg.err == nil {
+			m.statusMsg = fmt.Sprintf("🔊 Pre-caching %s ch.%s (%d/%d)", msg.bookName, msg.chapterID, msg.done, msg.total)
+		}
+		return m, m.cmdWaitPrecache(msg.ch)
+
+	case precacheDoneMsg:
+		m.statusMsg = fmt.Sprintf("✓ TTS pre-cache complete for %s", msg.translationID)
+		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -784,10 +830,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.importPanel, cmd = m.importPanel.Update(msg)
 			if m.importPanel.Done() {
+				tid := m.importPanel.lastTranslationID
 				// Refresh the bible list after a successful import
 				m.state = StateLoading
 				m.loading = true
-				return m, tea.Batch(cmd, m.spinner.Tick, m.cmdLoadBibles())
+				// Auto-start TTS pre-cache in background
+				var precacheCmd tea.Cmd
+				if tid != "" && m.localDB != nil && m.tts != nil {
+					precacheCmd = m.cmdStartPrecache(tid)
+				}
+				return m, tea.Batch(cmd, m.spinner.Tick, m.cmdLoadBibles(), precacheCmd)
 			}
 			return m, cmd
 		}
@@ -1029,6 +1081,10 @@ func (m Model) renderFooter() string {
 		if m.aiPanel != nil {
 			hints = m.aiPanel.Hints()
 		}
+	}
+	// Show precache/transient status when available
+	if m.statusMsg != "" {
+		hints = m.statusMsg
 	}
 	return m.styles.Footer.Width(m.width).Render(hints)
 }

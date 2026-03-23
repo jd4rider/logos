@@ -233,10 +233,11 @@ func expandBGNextLinks(client *http.Client, startURL, ua string) ([]string, erro
 // ── Chapter page parsing ──────────────────────────────────────────────────────
 
 var (
-	bgVerseClassRe = regexp.MustCompile(`class="text ([A-Za-z0-9]+)-(\d+)-(\d+)"`)
-	bgVerseSup     = regexp.MustCompile(`<sup[^>]*class="[^"]*versenum[^"]*"[^>]*>.*?</sup>`)
-	bgHTMLTag      = regexp.MustCompile(`<[^>]+>`)
-	bgMultiSpace   = regexp.MustCompile(`\s{2,}`)
+	bgVerseClassRe  = regexp.MustCompile(`class="text ([A-Za-z0-9]+)-(\d+)-(\d+)"`)
+	bgVerseSup      = regexp.MustCompile(`<sup[^>]*class="[^"]*versenum[^"]*"[^>]*>.*?</sup>`)
+	bgHeadingBlock  = regexp.MustCompile(`(?s)<h[2-6][^>]*>.*?</h[2-6]>`)
+	bgHTMLTag       = regexp.MustCompile(`<[^>]+>`)
+	bgMultiSpace    = regexp.MustCompile(`\s{2,}`)
 )
 
 // parseBGChapterPage extracts (bookName, chapterNum, verses) from a BG passage page.
@@ -293,6 +294,8 @@ func parseBGChapterPage(body string) (bookName string, chNum int, verses []rawVe
 		spanHTML := body[spanStart:spanEnd]
 		// Remove verse-number sups
 		spanHTML = bgVerseSup.ReplaceAllString(spanHTML, "")
+		// Remove section headings (h2–h6) including their text content
+		spanHTML = bgHeadingBlock.ReplaceAllString(spanHTML, " ")
 		// Remove all HTML tags
 		text := bgHTMLTag.ReplaceAllString(spanHTML, " ")
 		text = html.UnescapeString(text)
