@@ -695,7 +695,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "i", "I":
 			// Open import panel
 			if m.importPanel == nil {
-				m.importPanel = NewImportPanel(m.localDB)
+				m.importPanel = NewImportPanel(m.localDB, m.aiClient)
 			}
 			m.importPanel.Reset()
 			m.state = StateImport

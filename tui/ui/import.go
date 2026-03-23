@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	ailib "github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/crawler"
 	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/importer"
@@ -41,14 +42,15 @@ var importSourceLabels = []string{
 	"🌐  BibleGateway.com (paste a /versions/ or /passage/ URL)",
 	"📄  CSV file          (book, chapter, verse, text columns)",
 	"🗄️   SQLite file       (Scrollmapper, BibleSuperSearch, etc.)",
-	"🔗  Other website     (generic crawler, follows next-chapter links)",
+	"🔗  Other website     (generic crawler + AI fallback if Ollama running)",
 }
 
 // ── ImportPanel ───────────────────────────────────────────────────────────────
 
 // ImportPanel drives a multi-step import wizard inside the TUI.
 type ImportPanel struct {
-	localDB *localdb.DB
+	localDB  *localdb.DB
+	aiClient *ailib.Client // optional Ollama client for AI-powered crawl fallback
 
 	step     importStep
 	srcType  importSourceType
@@ -76,7 +78,7 @@ type ImportPanel struct {
 }
 
 // NewImportPanel creates a ready-to-use import panel.
-func NewImportPanel(db *localdb.DB) *ImportPanel {
+func NewImportPanel(db *localdb.DB, aiClient *ailib.Client) *ImportPanel {
 	src := textinput.New()
 	src.Placeholder = "URL or file path…"
 	src.CharLimit = 512
@@ -99,6 +101,7 @@ func NewImportPanel(db *localdb.DB) *ImportPanel {
 
 	return &ImportPanel{
 		localDB:     db,
+		aiClient:    aiClient,
 		sourceInput: src,
 		abbrInput:   abbr,
 		nameInput:   name,
@@ -266,6 +269,7 @@ func (p *ImportPanel) cmdRunImport() tea.Cmd {
 	srcType := p.srcType
 	ch := p.progressCh
 	db := p.localDB
+	aiClient := p.aiClient
 
 	go func() {
 		progress := func(msg string) { ch <- msg }
@@ -278,6 +282,7 @@ func (p *ImportPanel) cmdRunImport() tea.Cmd {
 				Name:         name,
 				MaxChapters:  0,
 				Delay:        1200 * time.Millisecond,
+				AIClient:     aiClient,
 				Progress:     progress,
 			})
 		case importSrcCSV:
