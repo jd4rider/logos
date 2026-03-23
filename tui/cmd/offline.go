@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/crawler"
 	"github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/importer"
@@ -95,6 +97,8 @@ Example:
 		id, _ := cmd.Flags().GetString("id")
 		maxChapters, _ := cmd.Flags().GetInt("max-chapters")
 		delayMs, _ := cmd.Flags().GetInt("delay")
+		resume, _ := cmd.Flags().GetBool("resume")
+		useAI, _ := cmd.Flags().GetBool("ai")
 
 		bibleDB, err := db.Open(db.DefaultDBPath())
 		if err != nil {
@@ -110,9 +114,23 @@ Example:
 			Language:      lang,
 			MaxChapters:   maxChapters,
 			Delay:         time.Duration(delayMs) * time.Millisecond,
+			SkipExisting:  resume,
 			Progress: func(msg string) {
 				fmt.Println(msg)
 			},
+		}
+
+		if useAI {
+			opts.AIClient = ai.NewClient()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			available := opts.AIClient.IsAvailable(ctx)
+			cancel()
+			if !available {
+				fmt.Fprintln(os.Stderr, "Warning: Ollama not available — AI fallback disabled")
+				opts.AIClient = nil
+			} else {
+				fmt.Println("✓ Ollama AI fallback enabled")
+			}
 		}
 
 		if err := crawler.Crawl(bibleDB, startURL, opts); err != nil {
@@ -176,6 +194,8 @@ func init() {
 	crawlCmd.Flags().String("id", "", "Override translation ID")
 	crawlCmd.Flags().Int("max-chapters", 0, "Stop after N chapters (0 = all)")
 	crawlCmd.Flags().Int("delay", 1000, "Delay between requests in milliseconds")
+	crawlCmd.Flags().Bool("resume", false, "Skip chapters already in the database (resume an interrupted crawl)")
+	crawlCmd.Flags().Bool("ai", false, "Use Ollama AI as fallback parser for unsupported website formats")
 
 	rootCmd.AddCommand(importCmd, crawlCmd, biblesCmd)
 }

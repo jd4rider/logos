@@ -14,33 +14,33 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/ai"
+	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/pdf"
 )
 
-// ── AI Panel state machine ────────────────────────────────────────────────────
+// ── Sub-states ────────────────────────────────────────────────────────────────
 
 type aiSubState int
 
 const (
-	aiMenu aiSubState = iota // top-level menu
-	aiTyping                 // user is typing a question or title
-	aiStreaming              // streaming response from Ollama
-	aiResult                 // showing completed result
-	aiSaving                 // showing "saved" confirmation
+	aiMenu      aiSubState = iota
+	aiTyping               // user entering title / topic / question
+	aiStreaming            // receiving tokens from Ollama
+	aiResult               // response complete
+	aiSaving               // showing save/export confirmation
 )
 
 type aiAction int
 
 const (
-	aiActionExplainVerse aiAction = iota
+	aiActionExplainVerse   aiAction = iota
 	aiActionExplainChapter
 	aiActionDevotional
 	aiActionSermon
 	aiActionStudyPlan
 	aiActionAsk
-	aiActionLibrary // browse saved content
+	aiActionLibrary
 )
 
 var aiMenuItems = []struct {
@@ -48,58 +48,21 @@ var aiMenuItems = []struct {
 	label  string
 	hint   string
 }{
-	{aiActionExplainVerse, "✦  Explain This Verse", "AI commentary on the selected verse"},
-	{aiActionExplainChapter, "✦  Explain This Chapter", "Overview and context for the full chapter"},
-	{aiActionDevotional, "✦  Generate Devotional", "Create a daily devotional from this verse"},
-	{aiActionSermon, "✦  Generate Sermon", "Write a full sermon based on this verse"},
-	{aiActionStudyPlan, "✦  Create Study Plan", "Build a multi-week study plan"},
+	{aiActionExplainVerse, "✦  Explain This Verse", "AI commentary on the current verse"},
+	{aiActionExplainChapter, "✦  Explain This Chapter", "Overview and context for the chapter"},
+	{aiActionDevotional, "✦  Generate Devotional", "Daily devotional from this passage"},
+	{aiActionSermon, "✦  Generate Sermon", "Full sermon based on this passage"},
+	{aiActionStudyPlan, "✦  Create Study Plan", "Multi-week Bible study plan"},
 	{aiActionAsk, "✦  Ask a Question", "Ask anything about this passage"},
-	{aiActionLibrary, "✦  My Library", "Browse saved devotionals, sermons, notes"},
+	{aiActionLibrary, "✦  My Library", "Browse saved devotionals, sermons & notes"},
 }
 
-// ── Messages ─────────────────────────────────────────────────────────────────
+// ── Messages ──────────────────────────────────────────────────────────────────
 
-type aiTokenMsg struct{ token string }
-type aiDoneMsg struct{ err error }
-type aiSavedMsg struct{ path string; err error }
-
-// ── AIPanel ──────────────────────────────────────────────────────────────────
-
-// AIPanel is the full AI assistant panel rendered in StateAI.
-type AIPanel struct {
-	sub       aiSubState
-	action    aiAction
-	menuIdx   int
-
-	// context passed from reader
-	verseRef    string
-	verseText   string
-	chapterText string
-	bookName    string
-	chapterNum  string
-	translation string
-
-	// input for prompts requiring user text (title, topic, question, weeks)
-	input     textarea.Model
-	inputHint string
-
-	// streaming / result
-	streamed  strings.Builder
-	vp        viewport.Model
-	spin      spinner.Model
-	cancel    context.CancelFunc
-
-	// library sub-list
-	libraryItems []libraryEntry
-	libraryIdx   int
-
-	db     *localdb.DB
-	ai     *ai.Client
-	width  int
-	height int
-	err    error
-	saved  string // last exported path
-}
+type aiTokenMsg        struct{ token string }
+type aiDoneMsg         struct{ err error }
+type aiSavedMsg        struct{ path string; err error }
+type libraryLoadedMsg  struct{ entries []libraryEntry }
 
 type libraryEntry struct {
 	kind    string // "devotional" | "sermon" | "note"
@@ -109,6 +72,45 @@ type libraryEntry struct {
 	content string
 	model   string
 	date    time.Time
+}
+
+// ── AIPanel ───────────────────────────────────────────────────────────────────
+
+type AIPanel struct {
+	sub     aiSubState
+	action  aiAction
+	menuIdx int
+
+	// passage context
+	verseRef    string
+	verseText   string
+	chapterText string
+	bookName    string
+	chapterNum  string
+	translation string
+
+	// input widget (title, topic, question)
+	input     textarea.Model
+	inputHint string
+
+	// streaming state
+	streamed strings.Builder
+	tokenCh  chan string // goroutine → BubbleTea
+	cancel   context.CancelFunc
+
+	vp   viewport.Model
+	spin spinner.Model
+
+	// library
+	libraryItems []libraryEntry
+	libraryIdx   int
+
+	db       *localdb.DB
+	aiClient *ai.Client
+	width    int
+	height   int
+	err      error
+	saved    string
 }
 
 // NewAIPanel creates a new AIPanel.
@@ -124,16 +126,14 @@ func NewAIPanel(db *localdb.DB, aiClient *ai.Client) *AIPanel {
 	vp := viewport.New(80, 20)
 
 	return &AIPanel{
-		sub:    aiMenu,
-		db:     db,
-		ai:     aiClient,
-		spin:   sp,
-		input:  ta,
-		vp:     vp,
+		db:       db,
+		aiClient: aiClient,
+		spin:     sp,
+		input:    ta,
+		vp:       vp,
 	}
 }
 
-// SetContext passes the current reader passage into the panel.
 func (p *AIPanel) SetContext(verseRef, verseText, chapterText, bookName, chapterNum, translation string) {
 	p.verseRef    = verseRef
 	p.verseText   = verseText
@@ -144,23 +144,33 @@ func (p *AIPanel) SetContext(verseRef, verseText, chapterText, bookName, chapter
 }
 
 func (p *AIPanel) SetSize(w, h int) {
-	p.width  = w
-	p.height = h
-	p.vp.Width  = w - 4
-	p.vp.Height = h - 14
+	p.width       = w
+	p.height      = h
+	p.vp.Width    = w - 4
+	p.vp.Height   = h - 12
 	p.input.SetWidth(w - 8)
 }
 
 func (p *AIPanel) Reset() {
-	p.sub      = aiMenu
-	p.menuIdx  = 0
+	p.sub     = aiMenu
+	p.menuIdx = 0
 	p.streamed.Reset()
-	p.err      = nil
-	p.saved    = ""
+	p.err   = nil
+	p.saved = ""
 	p.input.Reset()
+	p.stopStream()
+}
+
+func (p *AIPanel) stopStream() {
 	if p.cancel != nil {
 		p.cancel()
 		p.cancel = nil
+	}
+	if p.tokenCh != nil {
+		// drain
+		for range p.tokenCh {
+		}
+		p.tokenCh = nil
 	}
 }
 
@@ -168,25 +178,20 @@ func (p *AIPanel) Init() tea.Cmd {
 	return p.spin.Tick
 }
 
-// Done returns true when the user pressed Esc from the menu.
-// The parent should switch back to the previous state.
-func (p *AIPanel) Done() bool { return false } // handled by key in parent
-
 func (p *AIPanel) Hints() string {
 	switch p.sub {
 	case aiMenu:
 		return "↑↓ navigate  •  enter select  •  esc back"
 	case aiTyping:
-		return "ctrl+enter submit  •  esc cancel"
+		return "ctrl+s submit  •  esc cancel"
 	case aiStreaming:
 		return "esc stop generation"
 	case aiResult:
-		return "s speak  •  e export PDF  •  enter save to library  •  esc back"
+		return "enter save to library  •  e export PDF  •  esc back"
 	case aiSaving:
-		return "esc back"
-	default:
-		return "esc back"
+		return "any key to continue"
 	}
+	return ""
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -204,6 +209,8 @@ func (p *AIPanel) Update(msg tea.Msg) (*AIPanel, tea.Cmd) {
 		p.streamed.WriteString(msg.token)
 		p.vp.SetContent(wrapText(p.streamed.String(), p.vp.Width))
 		p.vp.GotoBottom()
+		// schedule next read
+		cmds = append(cmds, p.readNextToken())
 
 	case aiDoneMsg:
 		p.sub = aiResult
@@ -216,10 +223,14 @@ func (p *AIPanel) Update(msg tea.Msg) (*AIPanel, tea.Cmd) {
 		p.sub = aiSaving
 		if msg.err != nil {
 			p.err = msg.err
-			p.saved = ""
 		} else {
 			p.saved = msg.path
 		}
+
+	case libraryLoadedMsg:
+		p.libraryItems = msg.entries
+		p.sub = aiResult
+		p.renderLibrary()
 
 	case tea.KeyMsg:
 		switch p.sub {
@@ -229,9 +240,7 @@ func (p *AIPanel) Update(msg tea.Msg) (*AIPanel, tea.Cmd) {
 			return p.handleTypingKey(msg)
 		case aiStreaming:
 			if msg.String() == "esc" {
-				if p.cancel != nil {
-					p.cancel()
-				}
+				p.stopStream()
 				p.sub = aiResult
 			}
 		case aiResult:
@@ -273,7 +282,7 @@ func (p *AIPanel) handleMenuKey(msg tea.KeyMsg) (*AIPanel, tea.Cmd) {
 
 func (p *AIPanel) handleTypingKey(msg tea.KeyMsg) (*AIPanel, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+s", "ctrl+enter":
+	case "ctrl+s":
 		return p.submitInput()
 	case "esc":
 		p.sub = aiMenu
@@ -302,35 +311,34 @@ func (p *AIPanel) selectAction(action aiAction) (*AIPanel, tea.Cmd) {
 	p.err = nil
 
 	switch action {
-	case aiActionExplainVerse, aiActionExplainChapter, aiActionAsk:
-		if action == aiActionAsk {
-			p.inputHint = "Enter your question about this passage:"
-			p.sub = aiTyping
-			p.input.Placeholder = "e.g. What does this mean for daily life?"
-			p.input.Focus()
-			return p, textarea.Blink
-		}
-		// No input needed — go straight to streaming
-		return p, p.startGenerationCmd("")
-	case aiActionDevotional:
-		p.inputHint = "Optional theme (e.g. 'Faith', 'Courage') — press Ctrl+S to generate:"
+	case aiActionExplainVerse, aiActionExplainChapter:
+		return p, p.beginStream("")
+	case aiActionAsk:
+		p.inputHint = "Ask your question about this passage:"
+		p.input.Placeholder = "e.g. What does this mean for daily life?"
 		p.sub = aiTyping
-		p.input.Placeholder = "Leave blank for default theme"
+		p.input.Focus()
+		return p, textarea.Blink
+	case aiActionDevotional:
+		p.inputHint = "Optional theme (leave blank for default) — Ctrl+S to generate:"
+		p.input.Placeholder = "e.g. Faith, Courage, Hope"
+		p.sub = aiTyping
 		p.input.Focus()
 		return p, textarea.Blink
 	case aiActionSermon:
-		p.inputHint = "Sermon title (required):"
-		p.sub = aiTyping
+		p.inputHint = "Sermon title — Ctrl+S to generate:"
 		p.input.Placeholder = "e.g. Walking in the Light"
+		p.sub = aiTyping
 		p.input.Focus()
 		return p, textarea.Blink
 	case aiActionStudyPlan:
-		p.inputHint = "Study topic and number of weeks, e.g. 'Grace, 4 weeks':"
-		p.sub = aiTyping
+		p.inputHint = "Topic and weeks, e.g. 'Grace, 4 weeks' — Ctrl+S to generate:"
 		p.input.Placeholder = "e.g. Prayer and Fasting, 6 weeks"
+		p.sub = aiTyping
 		p.input.Focus()
 		return p, textarea.Blink
 	case aiActionLibrary:
+		p.sub = aiStreaming
 		return p, p.loadLibraryCmd()
 	}
 	return p, nil
@@ -339,137 +347,21 @@ func (p *AIPanel) selectAction(action aiAction) (*AIPanel, tea.Cmd) {
 func (p *AIPanel) submitInput() (*AIPanel, tea.Cmd) {
 	userInput := strings.TrimSpace(p.input.Value())
 	p.input.Reset()
-	p.sub = aiStreaming
-	return p, p.startGenerationCmd(userInput)
+	return p, p.beginStream(userInput)
 }
 
-// ── Commands ─────────────────────────────────────────────────────────────────
+// ── Streaming ─────────────────────────────────────────────────────────────────
 
-func (p *AIPanel) startGenerationCmd(userInput string) tea.Cmd {
-	p.sub = aiStreaming
-	p.streamed.Reset()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	p.cancel = cancel
-
-	vc := ai.VerseContext{
-		Reference:   p.verseRef,
-		Text:        p.verseText,
-		Translation: p.translation,
-	}
-
-	aiClient := p.ai
-
-	return func() tea.Msg {
-		var tokens <-chan string
-		var errc   <-chan error
-
-		switch p.action {
-		case aiActionExplainVerse:
-			tokens, errc = aiClient.ExplainVerse(ctx, vc)
-		case aiActionExplainChapter:
-			tokens, errc = aiClient.ExplainChapter(ctx, p.bookName, p.chapterNum, p.translation, p.chapterText)
-		case aiActionDevotional:
-			tokens, errc = aiClient.GenerateDevotional(ctx, vc, userInput)
-		case aiActionSermon:
-			tokens, errc = aiClient.GenerateSermon(ctx, vc, userInput)
-		case aiActionStudyPlan:
-			// Parse "Topic, N weeks" from userInput
-			topic, weeksStr := parseTopicWeeks(userInput)
-			weeks := 4
-			fmt.Sscanf(weeksStr, "%d", &weeks)
-			plan, err := aiClient.GenerateStudyPlan(ctx, topic, weeks, p.translation)
-			if err != nil {
-				return aiDoneMsg{err: err}
-			}
-			// Convert to readable text
-			var sb strings.Builder
-			sb.WriteString(plan.Title + "\n\n")
-			sb.WriteString(plan.Description + "\n\n")
-			for _, w := range plan.Weeks {
-				sb.WriteString(fmt.Sprintf("Week %d — %s\n", w.Week, w.Theme))
-				sb.WriteString("Reading: " + w.Reading + "\n")
-				if len(w.Verses) > 0 {
-					sb.WriteString("Key Verses: " + strings.Join(w.Verses, ", ") + "\n")
-				}
-				sb.WriteString(w.Notes + "\n\n")
-			}
-			// store JSON for saving
-			jsonBytes, _ := json.Marshal(plan)
-			_ = jsonBytes
-			return aiDoneMsg{}
-		case aiActionAsk:
-			tokens, errc = aiClient.AskAboutVerse(ctx, userInput, vc)
-		default:
-			return aiDoneMsg{err: fmt.Errorf("unknown action")}
-		}
-
-		// Stream tokens back as individual messages
-		// We collect all tokens and send batched updates
-		for t := range tokens {
-			_ = t // handled via channel below — we use a separate goroutine approach
-		}
-		if err := <-errc; err != nil {
-			return aiDoneMsg{err: err}
-		}
-		return aiDoneMsg{}
-	}
-}
-
-// streamCmd returns a command that fires a sequence of aiTokenMsg then aiDoneMsg.
-func (p *AIPanel) streamCmd(userInput string) tea.Cmd {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	p.cancel = cancel
-
-	vc := ai.VerseContext{
-		Reference:   p.verseRef,
-		Text:        p.verseText,
-		Translation: p.translation,
-	}
-
-	aiClient := p.ai
-	action   := p.action
-
-	return func() tea.Msg {
-		var tokens <-chan string
-		var errc   <-chan error
-
-		switch action {
-		case aiActionExplainVerse:
-			tokens, errc = aiClient.ExplainVerse(ctx, vc)
-		case aiActionExplainChapter:
-			tokens, errc = aiClient.ExplainChapter(ctx, p.verseRef, p.chapterNum, p.translation, p.chapterText)
-		case aiActionDevotional:
-			tokens, errc = aiClient.GenerateDevotional(ctx, vc, userInput)
-		case aiActionSermon:
-			tokens, errc = aiClient.GenerateSermon(ctx, vc, userInput)
-		case aiActionAsk:
-			tokens, errc = aiClient.AskAboutVerse(ctx, userInput, vc)
-		default:
-			return aiDoneMsg{err: fmt.Errorf("unsupported action")}
-		}
-
-		// We can't return multiple messages from one Cmd; use a sub-program pattern:
-		// collect all tokens synchronously and send one aiDoneMsg with full text.
-		var sb strings.Builder
-		for t := range tokens {
-			sb.WriteString(t)
-		}
-		if err := <-errc; err != nil && err != context.Canceled {
-			return aiDoneMsg{err: err}
-		}
-		return struct {
-			text string
-		}{text: sb.String()}
-	}
-}
-
-// We use a streaming approach via a goroutine that sends individual token messages.
-// Replace startGenerationCmd with this proper streaming version.
-func (p *AIPanel) StartStream(userInput string) tea.Cmd {
+// beginStream starts an Ollama generation in a background goroutine,
+// feeding tokens into p.tokenCh, then returns the first readNextToken cmd.
+func (p *AIPanel) beginStream(userInput string) tea.Cmd {
 	p.sub = aiStreaming
 	p.streamed.Reset()
+	p.stopStream()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	p.cancel = cancel
+	p.cancel  = cancel
+	p.tokenCh = make(chan string, 128)
 
 	vc := ai.VerseContext{
 		Reference:   p.verseRef,
@@ -477,88 +369,79 @@ func (p *AIPanel) StartStream(userInput string) tea.Cmd {
 		Translation: p.translation,
 	}
 
-	aiClient := p.ai
-	action   := p.action
+	tokenCh     := p.tokenCh
+	action      := p.action
+	aiCl        := p.aiClient
 	bookName    := p.bookName
 	chapterNum  := p.chapterNum
 	chapterText := p.chapterText
 	translation := p.translation
 
-	return func() tea.Msg {
+	go func() {
+		defer close(tokenCh)
+
 		var tokens <-chan string
 		var errc   <-chan error
 
 		switch action {
 		case aiActionExplainVerse:
-			tokens, errc = aiClient.ExplainVerse(ctx, vc)
+			tokens, errc = aiCl.ExplainVerse(ctx, vc)
 		case aiActionExplainChapter:
-			tokens, errc = aiClient.ExplainChapter(ctx, bookName, chapterNum, translation, chapterText)
+			tokens, errc = aiCl.ExplainChapter(ctx, bookName, chapterNum, translation, chapterText)
 		case aiActionDevotional:
-			tokens, errc = aiClient.GenerateDevotional(ctx, vc, userInput)
+			tokens, errc = aiCl.GenerateDevotional(ctx, vc, userInput)
 		case aiActionSermon:
-			tokens, errc = aiClient.GenerateSermon(ctx, vc, userInput)
+			tokens, errc = aiCl.GenerateSermon(ctx, vc, userInput)
 		case aiActionStudyPlan:
 			topic, weeksStr := parseTopicWeeks(userInput)
 			weeks := 4
 			fmt.Sscanf(weeksStr, "%d", &weeks)
-			plan, err := aiClient.GenerateStudyPlan(ctx, topic, weeks, translation)
+			plan, err := aiCl.GenerateStudyPlan(ctx, topic, weeks, translation)
 			if err != nil {
-				return aiDoneMsg{err: err}
+				tokenCh <- "\n[Error: " + err.Error() + "]"
+				return
 			}
-			// Render as readable text
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("%s\n\n%s\n\n", plan.Title, plan.Description))
-			for _, w := range plan.Weeks {
-				sb.WriteString(fmt.Sprintf("━━ Week %d — %s ━━\n", w.Week, w.Theme))
-				sb.WriteString("Reading: " + w.Reading + "\n")
-				if len(w.Verses) > 0 {
-					sb.WriteString("Key Verses: " + strings.Join(w.Verses, " • ") + "\n")
-				}
-				sb.WriteString(w.Notes + "\n\n")
-			}
-			return struct{ text string }{text: sb.String()}
+			tokenCh <- renderStudyPlanText(plan)
+			return
 		case aiActionAsk:
-			tokens, errc = aiClient.AskAboutVerse(ctx, userInput, vc)
+			tokens, errc = aiCl.AskAboutVerse(ctx, userInput, vc)
 		default:
-			return aiDoneMsg{err: fmt.Errorf("unsupported action")}
+			return
 		}
 
-		// Collect all tokens
-		var sb strings.Builder
 		for t := range tokens {
-			sb.WriteString(t)
+			select {
+			case tokenCh <- t:
+			case <-ctx.Done():
+				return
+			}
 		}
-		var genErr error
 		if errc != nil {
 			if err := <-errc; err != nil && err != context.Canceled {
-				genErr = err
+				tokenCh <- "\n[Error: " + err.Error() + "]"
 			}
 		}
-		return struct {
-			text string
-			err  error
-		}{text: sb.String(), err: genErr}
+	}()
+
+	return p.readNextToken()
+}
+
+// readNextToken returns a Cmd that reads one token from the channel.
+func (p *AIPanel) readNextToken() tea.Cmd {
+	ch := p.tokenCh
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		token, ok := <-ch
+		if !ok {
+			return aiDoneMsg{}
+		}
+		return aiTokenMsg{token: token}
 	}
 }
 
-// fullResultMsg carries the complete streamed text.
-type fullResultMsg struct {
-	text string
-	err  error
-}
-
-// HandleFullResult wires the anonymous struct from StartStream into a typed message.
-// Call this in the parent app's Update for StateAI.
-func HandleFullResult(msg tea.Msg) (string, error, bool) {
-	type r struct {
-		text string
-		err  error
-	}
-	if v, ok := msg.(r); ok {
-		return v.text, v.err, true
-	}
-	return "", nil, false
-}
+// ── Save / Export ─────────────────────────────────────────────────────────────
 
 func (p *AIPanel) saveToLibraryCmd() tea.Cmd {
 	content := p.streamed.String()
@@ -567,35 +450,34 @@ func (p *AIPanel) saveToLibraryCmd() tea.Cmd {
 	vRef    := p.verseRef
 	trans   := p.translation
 	model   := ""
-	if p.ai != nil {
-		model = p.ai.Model()
+	if p.aiClient != nil {
+		model = p.aiClient.Model()
 	}
-
 	return func() tea.Msg {
 		now := time.Now()
 		switch action {
 		case aiActionDevotional:
-			title := extractTitle(content)
+			title := extractFirstLine(content)
 			_, err := db.SaveDevotional(localdb.Devotional{
 				Title: title, VerseRef: vRef, Content: content,
 				AIModel: model, CreatedAt: now,
 			})
 			return aiSavedMsg{err: err}
 		case aiActionSermon:
-			title := extractTitle(content)
+			title := extractFirstLine(content)
 			_, err := db.SaveSermon(localdb.Sermon{
 				Title: title, ScriptureRef: vRef, Content: content,
 				AIModel: model, CreatedAt: now,
 			})
 			return aiSavedMsg{err: err}
-		case aiActionExplainVerse, aiActionAsk:
+		case aiActionExplainVerse, aiActionAsk, aiActionExplainChapter:
 			_, err := db.SaveNote(localdb.AINote{
 				VerseID: vRef, TranslationID: trans, Content: content,
 				AIModel: model, CreatedAt: now,
 			})
 			return aiSavedMsg{err: err}
 		}
-		return aiSavedMsg{err: fmt.Errorf("saving not supported for this content type")}
+		return aiSavedMsg{err: fmt.Errorf("saving not supported for this type")}
 	}
 }
 
@@ -609,22 +491,22 @@ func (p *AIPanel) exportPDFCmd() tea.Cmd {
 
 	return func() tea.Msg {
 		ts    := time.Now().Format("20060102-150405")
-		title := extractTitle(content)
+		title := extractFirstLine(content)
 		var outPath string
-		var err error
+		var err     error
 
 		switch action {
 		case aiActionDevotional:
-			outPath = filepath.Join(outDir, fmt.Sprintf("logos-devotional-%s.pdf", ts))
+			outPath = filepath.Join(outDir, "logos-devotional-"+ts+".pdf")
 			err = pdf.ExportDevotional(title, vRef, "", content, outPath)
 		case aiActionSermon:
-			outPath = filepath.Join(outDir, fmt.Sprintf("logos-sermon-%s.pdf", ts))
+			outPath = filepath.Join(outDir, "logos-sermon-"+ts+".pdf")
 			err = pdf.ExportSermon(title, vRef, content, outPath)
-		case aiActionExplainVerse, aiActionAsk:
-			outPath = filepath.Join(outDir, fmt.Sprintf("logos-note-%s.pdf", ts))
+		case aiActionExplainVerse, aiActionAsk, aiActionExplainChapter:
+			outPath = filepath.Join(outDir, "logos-note-"+ts+".pdf")
 			err = pdf.ExportNote(vRef, content, outPath)
 		default:
-			return aiSavedMsg{err: fmt.Errorf("export not supported for this content")}
+			return aiSavedMsg{err: fmt.Errorf("export not supported for this type")}
 		}
 		return aiSavedMsg{path: outPath, err: err}
 	}
@@ -634,175 +516,189 @@ func (p *AIPanel) loadLibraryCmd() tea.Cmd {
 	db := p.db
 	return func() tea.Msg {
 		var entries []libraryEntry
-		if db != nil {
-			if devs, err := db.ListDevotionals(20); err == nil {
-				for _, d := range devs {
-					entries = append(entries, libraryEntry{
-						kind: "devotional", id: d.ID, title: d.Title,
-						ref: d.VerseRef, content: d.Content, model: d.AIModel, date: d.CreatedAt,
-					})
-				}
+		if db == nil {
+			return libraryLoadedMsg{entries: entries}
+		}
+		if devs, err := db.ListDevotionals(20); err == nil {
+			for _, d := range devs {
+				entries = append(entries, libraryEntry{
+					kind: "devotional", id: d.ID, title: d.Title,
+					ref: d.VerseRef, content: d.Content, model: d.AIModel, date: d.CreatedAt,
+				})
 			}
-			if serms, err := db.ListSermons(20); err == nil {
-				for _, s := range serms {
-					entries = append(entries, libraryEntry{
-						kind: "sermon", id: s.ID, title: s.Title,
-						ref: s.ScriptureRef, content: s.Content, model: s.AIModel, date: s.CreatedAt,
-					})
-				}
+		}
+		if serms, err := db.ListSermons(20); err == nil {
+			for _, s := range serms {
+				entries = append(entries, libraryEntry{
+					kind: "sermon", id: s.ID, title: s.Title,
+					ref: s.ScriptureRef, content: s.Content, model: s.AIModel, date: s.CreatedAt,
+				})
 			}
 		}
 		return libraryLoadedMsg{entries: entries}
 	}
 }
 
-type libraryLoadedMsg struct{ entries []libraryEntry }
+func (p *AIPanel) renderLibrary() {
+	if len(p.libraryItems) == 0 {
+		p.vp.SetContent("No saved content yet.\n\nGenerate devotionals, sermons, or notes and press Enter to save them.")
+		return
+	}
+	var sb strings.Builder
+	for i, e := range p.libraryItems {
+		prefix := "  "
+		if i == p.libraryIdx {
+			prefix = "▶ "
+		}
+		sb.WriteString(fmt.Sprintf("%s[%s] %s\n", prefix, e.kind, e.title))
+		sb.WriteString(fmt.Sprintf("   %s  •  %s\n\n", e.ref, e.date.Format("Jan 2, 2006")))
+	}
+	p.vp.SetContent(sb.String())
+}
 
-// ── View ─────────────────────────────────────────────────────────────────────
+// ── View ──────────────────────────────────────────────────────────────────────
 
 func (p *AIPanel) View() string {
-	s := p.styles()
-
+	st := p.panelStyles()
 	switch p.sub {
 	case aiMenu:
-		return p.viewMenu(s)
+		return p.viewMenu(st)
 	case aiTyping:
-		return p.viewTyping(s)
+		return p.viewTyping(st)
 	case aiStreaming:
-		return p.viewStreaming(s)
+		return p.viewStreaming(st)
 	case aiResult:
-		return p.viewResult(s)
+		return p.viewResult(st)
 	case aiSaving:
-		return p.viewSaving(s)
+		return p.viewSaving(st)
 	}
 	return ""
 }
 
-type aiStyles struct {
+type panelStyleSet struct {
 	title    lipgloss.Style
 	selected lipgloss.Style
 	normal   lipgloss.Style
 	hint     lipgloss.Style
 	gold     lipgloss.Style
-	box      lipgloss.Style
+	red      lipgloss.Style
 }
 
-func (p *AIPanel) styles() aiStyles {
-	return aiStyles{
+func (p *AIPanel) panelStyles() panelStyleSet {
+	return panelStyleSet{
 		title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D4AF37")).Padding(0, 1),
 		selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D4AF37")).Background(lipgloss.Color("#0F172A")).Padding(0, 2),
 		normal:   lipgloss.NewStyle().Foreground(lipgloss.Color("#C9B8E8")).Padding(0, 2),
 		hint:     lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Italic(true),
 		gold:     lipgloss.NewStyle().Foreground(lipgloss.Color("#D4AF37")),
-		box:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#D4AF37")).Padding(0, 1),
+		red:      lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")),
 	}
 }
 
-func (p *AIPanel) header(s aiStyles, subtitle string) string {
-	title := s.title.Render("✝  Logos AI Assistant")
-	sub   := s.hint.Render(subtitle)
+func (p *AIPanel) panelHeader(st panelStyleSet, subtitle string) string {
+	title := st.title.Render("✝  Logos AI Assistant")
+	sub   := st.hint.Render(subtitle)
 	ctx   := ""
 	if p.verseRef != "" {
-		ctx = s.gold.Render("Context: ") + s.hint.Render(p.verseRef)
+		ctx = st.gold.Render("  Context: ") + st.hint.Render(p.verseRef)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, title, sub, ctx, "")
+	if p.aiClient != nil {
+		ctx += st.hint.Render("  •  model: " + p.aiClient.Model())
+	}
+	sep := strings.Repeat("─", max(p.width-4, 20))
+	return lipgloss.JoinVertical(lipgloss.Left, title, sub, ctx, st.hint.Render(sep), "")
 }
 
-func (p *AIPanel) viewMenu(s aiStyles) string {
-	var rows []string
-	rows = append(rows, p.header(s, "What would you like to do?"))
+func (p *AIPanel) viewMenu(st panelStyleSet) string {
+	rows := []string{p.panelHeader(st, "What would you like to do?")}
 	for i, item := range aiMenuItems {
-		line := item.label
 		if i == p.menuIdx {
-			rows = append(rows, s.selected.Render("▶  "+line))
+			rows = append(rows, st.selected.Render("▶  "+item.label))
+			rows = append(rows, st.hint.Render("     "+item.hint))
 		} else {
-			rows = append(rows, s.normal.Render("   "+line))
+			rows = append(rows, st.normal.Render("   "+item.label))
 		}
 	}
-	rows = append(rows, "", s.hint.Render(p.Hints()))
+	rows = append(rows, "", st.hint.Render(p.Hints()))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-func (p *AIPanel) viewTyping(s aiStyles) string {
+func (p *AIPanel) viewTyping(st panelStyleSet) string {
+	idx := p.menuIdx
+	if idx >= len(aiMenuItems) {
+		idx = 0
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		p.header(s, aiMenuItems[p.menuIdx].hint),
-		s.hint.Render(p.inputHint),
+		p.panelHeader(st, aiMenuItems[idx].hint),
+		st.gold.Render(p.inputHint),
 		"",
 		p.input.View(),
 		"",
-		s.hint.Render("Ctrl+S to generate  •  Esc to cancel"),
+		st.hint.Render(p.Hints()),
 	)
 }
 
-func (p *AIPanel) viewStreaming(s aiStyles) string {
-	text := p.streamed.String()
-	preview := text
-	if len(preview) > p.vp.Width*p.vp.Height {
-		preview = "..." + preview[len(preview)-p.vp.Width*p.vp.Height:]
-	}
-	p.vp.SetContent(wrapText(preview, p.vp.Width))
+func (p *AIPanel) viewStreaming(st panelStyleSet) string {
 	return lipgloss.JoinVertical(lipgloss.Left,
-		p.header(s, p.spin.View()+" Generating…"),
+		p.panelHeader(st, p.spin.View()+" Generating…  Esc to stop"),
 		p.vp.View(),
-		s.hint.Render("Esc to stop"),
 	)
 }
 
-func (p *AIPanel) viewResult(s aiStyles) string {
+func (p *AIPanel) viewResult(st panelStyleSet) string {
 	if p.err != nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
-			p.header(s, "Error"),
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(p.err.Error()),
+			p.panelHeader(st, "Error"),
+			st.red.Render(p.err.Error()),
 			"",
-			s.hint.Render("Esc to go back"),
+			st.hint.Render("Esc to go back"),
 		)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		p.header(s, aiMenuItems[p.menuIdx].label),
+		p.panelHeader(st, aiMenuItems[p.menuIdx].label),
 		p.vp.View(),
 		"",
-		s.hint.Render(p.Hints()),
+		st.hint.Render(p.Hints()),
 	)
 }
 
-func (p *AIPanel) viewSaving(s aiStyles) string {
-	msg := ""
+func (p *AIPanel) viewSaving(st panelStyleSet) string {
+	var msg string
 	if p.err != nil {
-		msg = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("Error: " + p.err.Error())
+		msg = st.red.Render("Error: " + p.err.Error())
 	} else if p.saved != "" {
-		msg = s.gold.Render("✓ Exported to: ") + s.hint.Render(p.saved)
+		msg = st.gold.Render("✓ Exported: ") + st.hint.Render(p.saved)
 	} else {
-		msg = s.gold.Render("✓ Saved to library!")
+		msg = st.gold.Render("✓ Saved to library!")
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		p.header(s, "Done"),
+		p.panelHeader(st, "Done"),
 		"",
 		msg,
 		"",
-		s.hint.Render("Press any key to continue"),
+		st.hint.Render("Any key to continue"),
 	)
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func wrapText(s string, width int) string {
-	if width <= 0 {
+	if width <= 10 {
 		width = 80
 	}
-	var lines []string
+	var out []string
 	for _, line := range strings.Split(s, "\n") {
 		for len(line) > width {
-			lines = append(lines, line[:width])
+			out = append(out, line[:width])
 			line = line[width:]
 		}
-		lines = append(lines, line)
+		out = append(out, line)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(out, "\n")
 }
 
-func extractTitle(content string) string {
-	lines := strings.Split(strings.TrimSpace(content), "\n")
-	for _, l := range lines {
+func extractFirstLine(content string) string {
+	for _, l := range strings.Split(strings.TrimSpace(content), "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			if len(l) > 80 {
@@ -814,17 +710,66 @@ func extractTitle(content string) string {
 	return "Untitled"
 }
 
-// parseTopicWeeks splits "Prayer and Fasting, 6 weeks" → ("Prayer and Fasting", "6")
 func parseTopicWeeks(s string) (topic, weeks string) {
-	parts := strings.Split(s, ",")
-	if len(parts) >= 2 {
+	parts := strings.SplitN(s, ",", 2)
+	if len(parts) == 2 {
 		topic = strings.TrimSpace(parts[0])
-		// extract number from second part
-		second := strings.ToLower(strings.TrimSpace(parts[1]))
-		second = strings.ReplaceAll(second, "weeks", "")
-		second = strings.ReplaceAll(second, "week", "")
-		weeks = strings.TrimSpace(second)
-		return
+		w := strings.ToLower(strings.TrimSpace(parts[1]))
+		w = strings.ReplaceAll(w, "weeks", "")
+		w = strings.ReplaceAll(w, "week", "")
+		return topic, strings.TrimSpace(w)
 	}
 	return strings.TrimSpace(s), "4"
+}
+
+func renderStudyPlanText(plan *ai.StudyPlan) string {
+	if plan == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(plan.Title + "\n\n")
+	sb.WriteString(plan.Description + "\n\n")
+	for _, w := range plan.Weeks {
+		sb.WriteString(fmt.Sprintf("━━ Week %d — %s ━━\n", w.Week, w.Theme))
+		sb.WriteString("Reading: " + w.Reading + "\n")
+		if len(w.Verses) > 0 {
+			sb.WriteString("Key Verses: " + strings.Join(w.Verses, " • ") + "\n")
+		}
+		sb.WriteString(w.Notes + "\n\n")
+	}
+	return sb.String()
+}
+
+// savePlanToLibrary saves a structured study plan to the database.
+func savePlanToLibrary(db *localdb.DB, plan *ai.StudyPlan, model string) error {
+	if db == nil || plan == nil {
+		return nil
+	}
+	weeks := make([]localdb.StudyPlanWeekRecord, 0, len(plan.Weeks))
+	for _, w := range plan.Weeks {
+		vj, _ := json.Marshal(w.Verses)
+		weeks = append(weeks, localdb.StudyPlanWeekRecord{
+			WeekNumber: w.Week,
+			Theme:      w.Theme,
+			Reading:    w.Reading,
+			VersesJSON: string(vj),
+			Notes:      w.Notes,
+		})
+	}
+	_, err := db.SaveStudyPlan(localdb.StudyPlanRecord{
+		Title:       plan.Title,
+		Description: plan.Description,
+		Topic:       plan.Title,
+		WeeksCount:  len(plan.Weeks),
+		AIModel:     model,
+		CreatedAt:   time.Now(),
+	}, weeks)
+	return err
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

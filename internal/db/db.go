@@ -381,6 +381,16 @@ func (d *DB) BulkUpsertVerses(verses []Verse) error {
 	return tx.Commit()
 }
 
+// ChapterVerseCount returns the number of verses stored for the given chapter.
+// Returns 0 on any error (treated as not imported).
+func (d *DB) ChapterVerseCount(translationID, chapterID string) int {
+	var n int
+	d.sql.QueryRow(
+		`SELECT COUNT(*) FROM verses WHERE translation_id=? AND chapter_id=?`,
+		translationID, chapterID).Scan(&n)
+	return n
+}
+
 // GetChapterContent returns a pseudo-content string (same [N] format as API.Bible)
 // for a chapter stored locally, suitable for rendering in the reader.
 func (d *DB) GetChapterContent(chapterID, translationID string) (string, error) {

@@ -106,11 +106,21 @@ func CrawlBibleGateway(bibleDB *db.DB, startURL string, opts Options) error {
 		}
 
 		bookID := importer.BookIDFromName(bookName)
+		chapterID := fmt.Sprintf("%s.%d", bookID, chNum)
+
+		// Skip if chapter already fully imported (resume mode)
+		if opts.SkipExisting {
+			if bibleDB.ChapterVerseCount(tid, chapterID) > 0 {
+				opts.progress(fmt.Sprintf("  ↷ skip %s %d (already imported)", bookName, chNum))
+				chapterCount++
+				continue
+			}
+		}
+
 		if err := bookTracker.ensure(bookID, bookName); err != nil {
 			opts.progress(fmt.Sprintf("  warning: book upsert: %v", err))
 		}
 
-		chapterID := fmt.Sprintf("%s.%d", bookID, chNum)
 		_ = bibleDB.UpsertChapter(db.Chapter{
 			ID: chapterID, BookID: bookID, TranslationID: tid, Number: chNum,
 		})
@@ -233,10 +243,11 @@ func expandBGNextLinks(client *http.Client, startURL, ua string) ([]string, erro
 // ── Chapter page parsing ──────────────────────────────────────────────────────
 
 var (
-	bgVerseClassRe = regexp.MustCompile(`class="text ([A-Za-z0-9]+)-(\d+)-(\d+)"`)
-	bgVerseSup     = regexp.MustCompile(`<sup[^>]*class="[^"]*versenum[^"]*"[^>]*>.*?</sup>`)
-	bgHTMLTag      = regexp.MustCompile(`<[^>]+>`)
-	bgMultiSpace   = regexp.MustCompile(`\s{2,}`)
+	bgVerseClassRe  = regexp.MustCompile(`class="text ([A-Za-z0-9]+)-(\d+)-(\d+)"`)
+	bgVerseSup      = regexp.MustCompile(`<sup[^>]*class="[^"]*versenum[^"]*"[^>]*>.*?</sup>`)
+	bgHeadingBlock  = regexp.MustCompile(`(?s)<h[2-6][^>]*>.*?</h[2-6]>`)
+	bgHTMLTag       = regexp.MustCompile(`<[^>]+>`)
+	bgMultiSpace    = regexp.MustCompile(`\s{2,}`)
 )
 
 // parseBGChapterPage extracts (bookName, chapterNum, verses) from a BG passage page.
@@ -293,6 +304,8 @@ func parseBGChapterPage(body string) (bookName string, chNum int, verses []rawVe
 		spanHTML := body[spanStart:spanEnd]
 		// Remove verse-number sups
 		spanHTML = bgVerseSup.ReplaceAllString(spanHTML, "")
+		// Remove section headings (h2–h6) including their text content
+		spanHTML = bgHeadingBlock.ReplaceAllString(spanHTML, " ")
 		// Remove all HTML tags
 		text := bgHTMLTag.ReplaceAllString(spanHTML, " ")
 		text = html.UnescapeString(text)

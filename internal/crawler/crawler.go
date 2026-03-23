@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/importer"
 )
@@ -27,11 +28,13 @@ import (
 // Options configures a crawl session.
 type Options struct {
 	TranslationID string
-	Name          string   // translation name
-	Abbreviation  string   // e.g. "KJV"
-	Language      string   // e.g. "eng"
-	MaxChapters   int      // 0 = unlimited
+	Name          string        // translation name
+	Abbreviation  string        // e.g. "KJV"
+	Language      string        // e.g. "eng"
+	MaxChapters   int           // 0 = unlimited
 	Delay         time.Duration // politeness delay between requests (default 1s)
+	SkipExisting  bool          // skip chapters that already have verses in the DB (resume)
+	AIClient      *ai.Client    // optional: Ollama AI fallback for generic sites
 	Progress      importer.Progress
 	UserAgent     string
 }
@@ -113,6 +116,17 @@ func Crawl(bibleDB *db.DB, startURL string, opts Options) error {
 
 		verses, nextURL, bookName, chNum := extractChapter(page, currentURL, base)
 		nextURL = resolveURL(base, nextURL)
+
+		// AI fallback: if heuristics found nothing and an AI client is available
+		if len(verses) == 0 && opts.AIClient != nil {
+			opts.progress(fmt.Sprintf("  ↪ heuristics found no verses, trying AI fallback…"))
+			aiVerses, aiErr := extractChapterWithAI(opts.AIClient, page, currentURL, bookName, chNum)
+			if aiErr != nil {
+				opts.progress(fmt.Sprintf("  warning (AI fallback): %v", aiErr))
+			} else {
+				verses = aiVerses
+			}
+		}
 
 		if len(verses) > 0 && bookName != "" {
 			bookID := importer.BookIDFromName(bookName)
