@@ -64,6 +64,9 @@ type ImportPanel struct {
 	done   bool
 	runErr error
 
+	// The translation ID created by the most recent successful import
+	lastTranslationID string
+
 	// Layout
 	width  int
 	height int
@@ -241,11 +244,14 @@ func (p *ImportPanel) Update(msg tea.Msg) (*ImportPanel, tea.Cmd) {
 	case importDoneMsg:
 		p.step = importStepDone
 		p.runErr = msg.err
+		p.lastTranslationID = msg.translationID
 		if msg.err != nil {
 			p.log = append(p.log, fmt.Sprintf("✗ Error: %v", msg.err))
 		} else {
 			p.log = append(p.log, "")
-			p.log = append(p.log, "✓ Import complete! Press enter to return.")
+			p.log = append(p.log, "✓ Import complete!")
+			p.log = append(p.log, "  🔊 Pre-caching TTS audio in the background…")
+			p.log = append(p.log, "  Press enter to return (caching continues silently).")
 		}
 	}
 
@@ -287,7 +293,9 @@ func (p *ImportPanel) cmdRunImport() tea.Cmd {
 				Progress:     progress,
 			})
 		}
-		ch <- "\x00DONE\x00" + fmt.Sprint(err)
+		// Derive translation ID the same way the crawler/importer does
+		tid := "bg-" + strings.ToLower(abbr)
+		ch <- "\x00DONE\x00" + tid + "\x00" + fmt.Sprint(err)
 	}()
 
 	return p.waitForProgress()
@@ -299,11 +307,19 @@ func (p *ImportPanel) waitForProgress() tea.Cmd {
 	return func() tea.Msg {
 		line := <-ch
 		if strings.HasPrefix(line, "\x00DONE\x00") {
-			errStr := strings.TrimPrefix(line, "\x00DONE\x00")
-			if errStr == "<nil>" || errStr == "" {
-				return importDoneMsg{nil}
+			rest := strings.TrimPrefix(line, "\x00DONE\x00")
+			// format: translationID\x00errString
+			parts := strings.SplitN(rest, "\x00", 2)
+			tid := ""
+			errStr := rest
+			if len(parts) == 2 {
+				tid    = parts[0]
+				errStr = parts[1]
 			}
-			return importDoneMsg{fmt.Errorf("%s", errStr)}
+			if errStr == "<nil>" || errStr == "" {
+				return importDoneMsg{nil, tid}
+			}
+			return importDoneMsg{fmt.Errorf("%s", errStr), tid}
 		}
 		return importProgressMsg{line}
 	}

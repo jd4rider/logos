@@ -53,7 +53,20 @@ type errMsg struct{ err error }
 
 // import panel messages
 type importProgressMsg struct{ line string }
-type importDoneMsg struct{ err error }
+type importDoneMsg struct {
+	err           error
+	translationID string
+}
+
+// precache messages
+type precacheProgressMsg struct {
+	bookName  string
+	chapterID string
+	done      int
+	total     int
+	err       error
+}
+type precacheDoneMsg struct{ translationID string }
 
 // ── List items ────────────────────────────────────────────────────────────────
 
@@ -220,24 +233,18 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 	return func() tea.Msg {
 		apiBibles, apiErr := m.client.GetBibles("eng")
 
-		// Build a merged, alphabetically-sorted list
-		seen := map[string]bool{}
+		// Build a merged, alphabetically-sorted list.
+		// Local (offline) entries win over API entries with the same abbreviation
+		// so that licensed translations that require a higher API tier don't 403.
+		seenID   := map[string]bool{}
+		seenAbbr := map[string]bool{} // normalised abbreviation dedup
 		var items []bibleItem
 
-		if apiErr == nil {
-			for _, b := range apiBibles {
-				items = append(items, bibleItem{b: b, offline: false})
-				seen[b.ID] = true
-			}
-		}
-
-		// Merge local SQLite translations (always — even if API worked)
+		// Add local SQLite translations FIRST so they take dedup priority
 		if m.localDB != nil {
 			if locals, err := m.localDB.ListTranslations(); err == nil {
 				for _, t := range locals {
-					if seen[t.ID] {
-						continue // API version takes priority for same ID
-					}
+					normAbbr := strings.ToUpper(stripLangPrefix(t.Abbreviation))
 					items = append(items, bibleItem{
 						b: api.Bible{
 							ID:           t.ID,
@@ -251,29 +258,46 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 						},
 						offline: true,
 					})
+					seenID[t.ID]     = true
+					seenAbbr[normAbbr] = true
 				}
 			}
 		}
 
-		// Sort alphabetically by abbreviation
+		// Add API translations, skipping any whose abbreviation matches a local one
+		if apiErr == nil {
+			for _, b := range apiBibles {
+				if seenID[b.ID] {
+					continue
+				}
+				normAbbr := strings.ToUpper(stripLangPrefix(b.Abbreviation))
+				if seenAbbr[normAbbr] {
+					// local version exists — skip the API copy to avoid 403
+					continue
+				}
+				items = append(items, bibleItem{b: b, offline: false})
+				seenID[b.ID]     = true
+				seenAbbr[normAbbr] = true
+			}
+		}
+
+		// Sort alphabetically by stripped abbreviation
 		sort.Slice(items, func(i, j int) bool {
-			ai := stripEngPrefix(items[i].b.Abbreviation)
-			aj := stripEngPrefix(items[j].b.Abbreviation)
+			ai := strings.ToUpper(stripLangPrefix(items[i].b.Abbreviation))
+			aj := strings.ToUpper(stripLangPrefix(items[j].b.Abbreviation))
 			return ai < aj
 		})
 
-		// Convert to api.Bible slice for the msg (offline flag carried in bibleItem)
-		bibles := make([]api.Bible, len(items))
+		bibles      := make([]api.Bible, len(items))
 		offlineFlags := make([]bool, len(items))
 		for i, it := range items {
-			bibles[i] = it.b
+			bibles[i]      = it.b
 			offlineFlags[i] = it.offline
 		}
 
 		if apiErr != nil && len(bibles) == 0 {
 			return errMsg{apiErr}
 		}
-		// Use offline=true only if ALL results are local (API totally failed)
 		return biblesLoadedMsg{bibles: bibles, offline: apiErr != nil, offlineFlags: offlineFlags}
 	}
 }
@@ -1185,36 +1209,74 @@ func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) 
 	}, nil
 }
 
-// stripEngPrefix removes the "eng" prefix some API.Bible abbreviations carry.
-// "engKJV" → "KJV", "engWEB" → "WEB", "KJV" → "KJV" (unchanged).
-func stripEngPrefix(abbr string) string {
-	if strings.HasPrefix(abbr, "eng") && len(abbr) > 3 {
-		return abbr[3:]
+// stripLangPrefix removes any leading ISO-639-3 or ISO-639-1 language code from
+// a Bible abbreviation. Handles 3-letter codes (eng, spa, fra, deu, por, zho,
+// hin, ara, rus, kor, jpn, vie, ind, nld, ita, pol, tur, heb, grc) and 2-letter
+// codes (en, es, fr, de, pt). Examples:
+//   "engKJV"  → "KJV"
+//   "spaRVR"  → "RVR"
+//   "espBLA"  → "BLA"  (esp treated same as spa)
+//   "KJV"     → "KJV"  (unchanged)
+func stripLangPrefix(abbr string) string {
+	known3 := []string{
+		"eng", "spa", "esp", "fra", "deu", "ger", "por", "zho", "hin",
+		"ara", "rus", "kor", "jpn", "vie", "ind", "nld", "ita", "pol",
+		"tur", "heb", "grc", "lat", "afr", "swa", "urd", "ben", "tam",
+	}
+	lower := strings.ToLower(abbr)
+	for _, pfx := range known3 {
+		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
+			return abbr[len(pfx):]
+		}
+	}
+	known2 := []string{"en", "es", "fr", "de", "pt", "it", "nl", "pl"}
+	for _, pfx := range known2 {
+		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
+			// Only strip if next char is uppercase (e.g. "enWEB" not "enjoy")
+			if abbr[len(pfx)] >= 'A' && abbr[len(pfx)] <= 'Z' {
+				return abbr[len(pfx):]
+			}
+		}
 	}
 	return abbr
 }
 
+// stripEngPrefix is kept for backwards compat; delegates to stripLangPrefix.
+func stripEngPrefix(abbr string) string { return stripLangPrefix(abbr) }
+
+// displayLanguageName maps ISO-639-3/1 codes to English display names.
 func displayLanguageName(code string) string {
-	switch strings.ToLower(strings.TrimSpace(code)) {
-	case "eng", "en":
-		return "English"
-	case "spa", "es":
-		return "Spanish"
-	case "fra", "fr":
-		return "French"
-	case "deu", "de", "ger":
-		return "German"
-	case "ita", "it":
-		return "Italian"
-	case "por", "pt":
-		return "Portuguese"
-	case "grc":
-		return "Greek"
-	case "heb":
-		return "Hebrew"
-	default:
-		return code
+	m := map[string]string{
+		"eng": "English", "en": "English",
+		"spa": "Spanish", "es": "Spanish", "esp": "Spanish",
+		"fra": "French",  "fr": "French",
+		"deu": "German",  "ger": "German", "de": "German",
+		"ita": "Italian", "it": "Italian",
+		"por": "Portuguese", "pt": "Portuguese",
+		"nld": "Dutch",   "nl": "Dutch",
+		"pol": "Polish",  "pl": "Polish",
+		"rus": "Russian", "ru": "Russian",
+		"zho": "Chinese", "zh": "Chinese",
+		"hin": "Hindi",   "hi": "Hindi",
+		"ara": "Arabic",  "ar": "Arabic",
+		"kor": "Korean",  "ko": "Korean",
+		"jpn": "Japanese","ja": "Japanese",
+		"vie": "Vietnamese","vi": "Vietnamese",
+		"ind": "Indonesian","id": "Indonesian",
+		"tur": "Turkish", "tr": "Turkish",
+		"swa": "Swahili", "sw": "Swahili",
+		"urd": "Urdu",    "ur": "Urdu",
+		"ben": "Bengali", "bn": "Bengali",
+		"tam": "Tamil",   "ta": "Tamil",
+		"afr": "Afrikaans",
+		"lat": "Latin",
+		"grc": "Greek (Ancient)",
+		"heb": "Hebrew",
 	}
+	if name, ok := m[strings.ToLower(strings.TrimSpace(code))]; ok {
+		return name
+	}
+	return code
 }
 
 func formatLocalReference(verseID string) string {
