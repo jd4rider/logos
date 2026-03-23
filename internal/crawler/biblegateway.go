@@ -106,11 +106,21 @@ func CrawlBibleGateway(bibleDB *db.DB, startURL string, opts Options) error {
 		}
 
 		bookID := importer.BookIDFromName(bookName)
+		chapterID := fmt.Sprintf("%s.%d", bookID, chNum)
+
+		// Skip if chapter already fully imported (resume mode)
+		if opts.SkipExisting {
+			if bibleDB.ChapterVerseCount(tid, chapterID) > 0 {
+				opts.progress(fmt.Sprintf("  ↷ skip %s %d (already imported)", bookName, chNum))
+				chapterCount++
+				continue
+			}
+		}
+
 		if err := bookTracker.ensure(bookID, bookName); err != nil {
 			opts.progress(fmt.Sprintf("  warning: book upsert: %v", err))
 		}
 
-		chapterID := fmt.Sprintf("%s.%d", bookID, chNum)
 		_ = bibleDB.UpsertChapter(db.Chapter{
 			ID: chapterID, BookID: bookID, TranslationID: tid, Number: chNum,
 		})

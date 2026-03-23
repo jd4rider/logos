@@ -32,6 +32,7 @@ type Options struct {
 	Language      string   // e.g. "eng"
 	MaxChapters   int      // 0 = unlimited
 	Delay         time.Duration // politeness delay between requests (default 1s)
+	SkipExisting  bool     // skip chapters that already have verses in the DB (resume)
 	Progress      importer.Progress
 	UserAgent     string
 }

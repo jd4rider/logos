@@ -95,6 +95,7 @@ Example:
 		id, _ := cmd.Flags().GetString("id")
 		maxChapters, _ := cmd.Flags().GetInt("max-chapters")
 		delayMs, _ := cmd.Flags().GetInt("delay")
+		resume, _ := cmd.Flags().GetBool("resume")
 
 		bibleDB, err := db.Open(db.DefaultDBPath())
 		if err != nil {
@@ -110,6 +111,7 @@ Example:
 			Language:      lang,
 			MaxChapters:   maxChapters,
 			Delay:         time.Duration(delayMs) * time.Millisecond,
+			SkipExisting:  resume,
 			Progress: func(msg string) {
 				fmt.Println(msg)
 			},
@@ -176,6 +178,7 @@ func init() {
 	crawlCmd.Flags().String("id", "", "Override translation ID")
 	crawlCmd.Flags().Int("max-chapters", 0, "Stop after N chapters (0 = all)")
 	crawlCmd.Flags().Int("delay", 1000, "Delay between requests in milliseconds")
+	crawlCmd.Flags().Bool("resume", false, "Skip chapters already in the database (resume an interrupted crawl)")
 
 	rootCmd.AddCommand(importCmd, crawlCmd, biblesCmd)
 }
