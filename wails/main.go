@@ -28,7 +28,7 @@ func main() {
 	app := NewApp(client, ttsEng)
 
 	err := wails.Run(&options.App{
-		Title:            "Bible Reader",
+		Title:            "Logos AI",
 		Width:            1440,
 		Height:           900,
 		MinWidth:         1100,
@@ -45,8 +45,8 @@ func main() {
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 			About: &mac.AboutInfo{
-				Title:   "Bible Reader",
-				Message: "A professional Bible reader desktop app",
+				Title:   "Logos AI",
+				Message: "AI-assisted Bible reader desktop app",
 			},
 		},
 	})

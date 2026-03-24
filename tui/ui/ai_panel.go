@@ -702,7 +702,6 @@ func (p *AIPanel) viewMenu(st panelStyleSet) string {
 			rows = append(rows, st.normal.Render("   "+item.label))
 		}
 	}
-	rows = append(rows, "", st.hint.Render(p.Hints()))
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -716,8 +715,6 @@ func (p *AIPanel) viewTyping(st panelStyleSet) string {
 		st.gold.Render(p.inputHint),
 		"",
 		p.input.View(),
-		"",
-		st.hint.Render(p.Hints()),
 	)
 }
 
@@ -733,15 +730,11 @@ func (p *AIPanel) viewResult(st panelStyleSet) string {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			p.panelHeader(st, "Error"),
 			st.red.Render(p.err.Error()),
-			"",
-			st.hint.Render("Esc to go back"),
 		)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		p.panelHeader(st, aiMenuItems[p.menuIdx].label),
 		p.vp.View(),
-		"",
-		st.hint.Render(p.Hints()),
 	)
 }
 
@@ -758,8 +751,6 @@ func (p *AIPanel) viewSaving(st panelStyleSet) string {
 		p.panelHeader(st, "Done"),
 		"",
 		msg,
-		"",
-		st.hint.Render("Any key to continue"),
 	)
 }
 
