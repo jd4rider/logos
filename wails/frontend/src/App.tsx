@@ -8,6 +8,53 @@ import TTSBar from './components/TTSBar';
 
 type View = 'bibles' | 'books' | 'chapters' | 'reader' | 'search';
 
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-b border-border/60 last:border-b-0">
+      <span className="text-xs uppercase tracking-wider text-muted">{label}</span>
+      <span className="text-right text-sm text-text">{value}</span>
+    </div>
+  );
+}
+
+function SettingsPlaceholder() {
+  const items = [
+    {
+      title: 'Startup Window',
+      description: 'Opens visible and maximized on launch without entering fullscreen.',
+    },
+    {
+      title: 'Reader Layout',
+      description: 'Reserved for pane behavior, default focus, and reading layout controls.',
+    },
+    {
+      title: 'Speech',
+      description: 'Reserved for voice defaults, pause behavior, and sync tuning.',
+    },
+    {
+      title: 'AI',
+      description: 'Reserved for future TUI parity features, providers, and prompts.',
+    },
+  ];
+
+  return (
+    <section className="bg-surface border border-border rounded-lg p-4">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-semibold text-gold uppercase tracking-wider">Settings</h2>
+        <span className="text-[11px] uppercase tracking-wider text-muted">Placeholder</span>
+      </div>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <div key={item.title} className="rounded-md border border-border/70 bg-bg/40 px-3 py-3">
+            <div className="text-sm font-medium text-text">{item.title}</div>
+            <div className="mt-1 text-xs leading-5 text-muted">{item.description}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<View>('bibles');
   const [bibles, setBibles] = useState<Bible[]>([]);
@@ -80,6 +127,14 @@ export default function App() {
     else if (view === 'chapters') setView('books');
     else if (view === 'books') setView('bibles');
   };
+
+  const locationSummary = currentBible
+    ? [
+        currentBible.abbreviation,
+        currentBook?.name,
+        currentChapter ? `Chapter ${currentChapter.number}` : null,
+      ].filter(Boolean).join(' / ')
+    : 'No selection yet';
 
   return (
     <div className="flex flex-col h-screen bg-bg text-text">
@@ -171,6 +226,23 @@ export default function App() {
             </div>
           ) : null}
         </main>
+
+        <aside className="w-80 border-l border-border bg-surface/70 backdrop-blur-sm overflow-y-auto flex-shrink-0">
+          <div className="p-4 space-y-4">
+            <section className="bg-surface border border-border rounded-lg p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <h2 className="text-sm font-semibold text-gold uppercase tracking-wider">Status</h2>
+                <span className="text-[11px] uppercase tracking-wider text-muted">{loading ? 'Loading' : 'Ready'}</span>
+              </div>
+              <DetailRow label="View" value={showSearch ? 'Search' : view} />
+              <DetailRow label="Location" value={locationSummary} />
+              <DetailRow label="Translation" value={currentBible?.name ?? 'Choose a Bible'} />
+              <DetailRow label="Search" value={showSearch ? 'Open' : 'Closed'} />
+            </section>
+
+            <SettingsPlaceholder />
+          </div>
+        </aside>
       </div>
     </div>
   );

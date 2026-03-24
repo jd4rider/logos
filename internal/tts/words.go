@@ -25,15 +25,101 @@ var (
 verseNumRe = regexp.MustCompile(`\[(\d+)\]`)
 pilcrowRe  = regexp.MustCompile(`¶\s*`)
 extraSpace = regexp.MustCompile(`\s{2,}`)
+
+// Markdown patterns
+mdFencedCode  = regexp.MustCompile("(?s)```[^`]*```")         // ```code blocks```
+mdInlineCode  = regexp.MustCompile("`[^`]+`")                  // `inline code`
+mdHeading     = regexp.MustCompile(`(?m)^#{1,6}\s+`)           // # ## ### headings
+mdHRule       = regexp.MustCompile(`(?m)^[-*_]{3,}\s*$`)       // --- *** ___ hr
+mdBoldItalic  = regexp.MustCompile(`\*{1,3}([^*\n]+)\*{1,3}`) // *italic* **bold** ***both***
+mdUnderline   = regexp.MustCompile(`_{1,2}([^_\n]+)_{1,2}`)   // _italic_ __bold__
+mdStrike      = regexp.MustCompile(`~~([^~]+)~~`)              // ~~strikethrough~~
+mdLink        = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)  // [text](url) and ![alt](url)
+mdLinkRef     = regexp.MustCompile(`!?\[([^\]]*)\]\[[^\]]*\]`) // [text][ref]
+mdBlockquote  = regexp.MustCompile(`(?m)^>\s?`)                // > blockquote
+mdListBullet  = regexp.MustCompile(`(?m)^\s*[-*+]\s+`)         // - * + list items
+mdListNum     = regexp.MustCompile(`(?m)^\s*\d+\.\s+`)         // 1. numbered list
+mdHTMLTag     = regexp.MustCompile(`<[^>]+>`)                  // <html tags>
+
+// HTML entities
+mdHTMLEntities = map[string]string{
+"&amp;":  "&",
+"&lt;":   "<",
+"&gt;":   ">",
+"&quot;": "\"",
+"&#39;":  "'",
+"&apos;": "'",
+"&nbsp;": " ",
+"&mdash;": "—",
+"&ndash;": "–",
+"&ldquo;": "\"",
+"&rdquo;": "\"",
+"&lsquo;": "'",
+"&rsquo;": "'",
+"&hellip;": "...",
+"&bull;": "",
+"&copy;": "",
+"&reg;": "",
+"&trade;": "",
+}
 )
 
+// stripMarkdown removes markdown and HTML formatting from text, leaving only
+// the natural prose that should be spoken aloud.
+func stripMarkdown(s string) string {
+// Remove fenced code blocks entirely — they're not meant to be read aloud
+s = mdFencedCode.ReplaceAllString(s, " ")
+// Inline code: keep the content but strip backticks
+s = mdInlineCode.ReplaceAllStringFunc(s, func(m string) string {
+return m[1 : len(m)-1]
+})
+// Headings: strip the # markers
+s = mdHeading.ReplaceAllString(s, "")
+// Horizontal rules: replace with pause
+s = mdHRule.ReplaceAllString(s, "  ")
+// Bold/italic: keep inner text
+s = mdBoldItalic.ReplaceAllString(s, "$1")
+s = mdUnderline.ReplaceAllString(s, "$1")
+s = mdStrike.ReplaceAllString(s, "$1")
+// Links: keep link text, drop URL
+s = mdLink.ReplaceAllString(s, "$1")
+s = mdLinkRef.ReplaceAllString(s, "$1")
+// Blockquotes: strip the > prefix
+s = mdBlockquote.ReplaceAllString(s, "")
+// List markers: strip - * + 1. etc.
+s = mdListBullet.ReplaceAllString(s, "")
+s = mdListNum.ReplaceAllString(s, "")
+// Strip HTML tags
+s = mdHTMLTag.ReplaceAllString(s, " ")
+// HTML entities
+for entity, replacement := range mdHTMLEntities {
+s = strings.ReplaceAll(s, entity, replacement)
+}
+// Any remaining stray backticks, ~~ remnants, bare asterisks/underscores
+// that weren't part of balanced pairs — strip them so TTS doesn't say the symbol name.
+// We do this carefully: only strip runs of 1–3 of these that are surrounded by
+// spaces or at line boundaries, not mid-word punctuation like "don't" or "it's".
+s = regexp.MustCompile(`(?:^|\s)[*_~]{1,3}(?:\s|$)`).ReplaceAllStringFunc(s, func(m string) string {
+// Preserve surrounding spaces, drop the symbol
+return strings.Map(func(r rune) rune {
+if r == '*' || r == '_' || r == '~' {
+return -1
+}
+return r
+}, m)
+})
+return s
+}
+
 // CleanForTTS converts raw chapter content to spoken prose.
-// Verse numbers are replaced with a brief pause marker ("...") so the TTS
-// engine pauses naturally at verse boundaries without announcing numbers.
+// Strips markdown/HTML formatting first, then replaces verse markers with
+// brief pause markers ("...") so the TTS engine pauses naturally at verse
+// boundaries without announcing numbers.
 // The first verse marker ([1]) is dropped so reading begins immediately.
 func CleanForTTS(content string) string {
+s := stripMarkdown(content)
 first := true
-s := verseNumRe.ReplaceAllStringFunc(content, func(m string) string {
+s = verseNumRe.ReplaceAllStringFunc(s, func(m string) string {
 if first {
 first = false
 return "  "
