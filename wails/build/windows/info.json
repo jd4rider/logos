@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "JD4Rider",
+			"FileDescription": "A tray-first Bible reader powered by the Logos backend",
+			"LegalCopyright": "© 2026 JD4Rider",
+			"ProductName": "Logos AI",
+			"Comments": "Wails v3 desktop companion for the Logos project"
+		}
+	}
+}

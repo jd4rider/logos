@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Logos AI
+Comment=A tray-first Bible reader powered by the Logos backend
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/logos-ai %u
+Terminal=false
+Type=Application
+Icon=logos-ai
+Categories=Utility;
+StartupWMClass=logos-ai
+
+ 

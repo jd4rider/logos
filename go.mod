@@ -6,8 +6,12 @@ require (
 	github.com/charmbracelet/bubbles v0.21.1-0.20250623103423-23b8fd6302d7
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/joho/godotenv v1.5.1
 	github.com/spf13/cobra v1.9.1
+	github.com/wailsapp/wails/v3 v3.0.0-alpha.74
+	golang.org/x/net v0.52.0
+	modernc.org/sqlite v1.47.0
 )
 
 require (
@@ -22,6 +26,9 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.4 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.14 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
+	github.com/clipperhouse/displaywidth v0.7.0 // indirect
+	github.com/clipperhouse/stringish v0.1.1 // indirect
+	github.com/clipperhouse/uax29/v2 v2.4.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
@@ -33,7 +40,6 @@ require (
 	github.com/go-git/go-billy/v5 v5.7.0 // indirect
 	github.com/go-git/go-git/v5 v5.16.4 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-pdf/fpdf v0.9.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -64,17 +70,13 @@ require (
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/wailsapp/go-webview2 v1.0.23 // indirect
-	github.com/wailsapp/wails/v3 v3.0.0-alpha.74 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.47.0 // indirect
 )

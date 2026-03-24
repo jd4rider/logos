@@ -4,17 +4,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg: '#0d0d1a',
-        surface: '#1a1a2e',
-        border: '#2a2a4a',
-        text: '#e8e6d9',
-        muted: '#888899',
-        gold: '#d4af37',
-        accent: '#7b8cde',
-        highlight: '#16213e',
+        bg: '#06111c',
+        surface: '#102131',
+        border: '#254259',
+        text: '#f7f1e3',
+        muted: '#9eb0bf',
+        gold: '#f5bf52',
+        accent: '#8dd6ff',
+        highlight: '#183347',
       },
       fontFamily: {
-        serif: ['Georgia', 'Cambria', 'Times New Roman', 'serif'],
+        display: ['Baskerville', 'Palatino Linotype', 'Book Antiqua', 'serif'],
+        sans: ['Avenir Next', 'Segoe UI', 'sans-serif'],
+        serif: ['Iowan Old Style', 'Baskerville', 'Palatino Linotype', 'serif'],
+      },
+      boxShadow: {
+        panel: '0 22px 70px rgba(0, 0, 0, 0.32)',
       },
     },
   },

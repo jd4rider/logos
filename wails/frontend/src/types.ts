@@ -6,7 +6,7 @@ export interface Language {
   scriptDirection: string;
 }
 
-export interface Bible {
+export interface BibleSummary {
   id: string;
   abbreviation: string;
   name: string;
@@ -14,6 +14,7 @@ export interface Bible {
   description: string;
   language: Language;
   type: string;
+  source: string;
 }
 
 export interface Book {
@@ -51,16 +52,6 @@ export interface ChapterContent {
   previous?: ChapterRef;
 }
 
-export interface VerseContent {
-  id: string;
-  bookId: string;
-  chapterId: string;
-  bibleId: string;
-  reference: string;
-  content: string;
-  copyright: string;
-}
-
 export interface SearchVerse {
   id: string;
   orgId: string;
@@ -78,4 +69,19 @@ export interface SearchData {
   total: number;
   verseCount: number;
   verses: SearchVerse[];
+}
+
+export interface VoiceOption {
+  name: string;
+  id: string;
+  engine: string;
+  label: string;
+}
+
+export interface SpeechSettings {
+  available: boolean;
+  engine: string;
+  rate: number;
+  activeVoice?: VoiceOption | null;
+  voices: VoiceOption[];
 }
