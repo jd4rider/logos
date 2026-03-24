@@ -15,7 +15,6 @@ interface Props {
 
 export default function Sidebar({ view, bibles, books, chapters, loading, onSelectBible, onSelectBook, onSelectChapter }: Props) {
   const itemClass = "px-3 py-2 cursor-pointer hover:bg-highlight border-b border-border/50 transition-colors";
-  const selectedClass = "bg-highlight border-l-2 border-l-gold";
 
   if (loading && !bibles.length && !books.length && !chapters.length) {
     return (
@@ -46,7 +45,7 @@ export default function Sidebar({ view, bibles, books, chapters, loading, onSele
             Books
           </div>
           {books.map(b => (
-            <div key={b.id} className={`${itemClass} ${view !== 'bibles' && view !== 'books' ? '' : ''}`} onClick={() => onSelectBook(b)}>
+            <div key={b.id} className={itemClass} onClick={() => onSelectBook(b)}>
               <div className="text-text text-sm">{b.name}</div>
             </div>
           ))}
