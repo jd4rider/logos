@@ -1128,6 +1128,7 @@ func (m Model) openAIPanel() (Model, tea.Cmd) {
 	if m.aiPanel == nil {
 		m.aiPanel = NewAIPanel(m.localDB, m.aiClient)
 		m.aiPanel.SetSize(m.width, m.contentHeight())
+		m.aiPanel.SetTTSEngine(m.tts)
 	}
 	m.aiPanel.Reset()
 
