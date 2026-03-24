@@ -180,6 +180,7 @@ type Model struct {
 	ttsSpeaking  bool
 	ttsPaused    bool   // audio paused (SIGSTOP); word tick also halted
 	ttsCleanText string // CleanForTTS output; used for jump-to-word re-synthesis
+	ttsGen       int    // session generation; stale WordAdvanceMsg are discarded
 
 	// Search overlay
 	inSearch bool
@@ -565,13 +566,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case coretts.TTSStartedMsg:
-		if m.ttsSpeaking {
-			return m, coretts.SyncedWordTickCmd(m.ttsDurations, 1)
+		// Discard stale started messages from a previous session
+		if msg.Gen != m.ttsGen || !m.ttsSpeaking {
+			return m, nil
 		}
-		return m, nil
+		return m, coretts.SyncedWordTickCmd(m.ttsDurations, 1, m.ttsGen)
 
 	case coretts.WordAdvanceMsg:
-		if !m.ttsSpeaking {
+		// Discard stale ticks from superseded TTS sessions
+		if msg.Gen != m.ttsGen || !m.ttsSpeaking {
 			return m, nil
 		}
 		m.ttsWordIndex = msg.Index
@@ -591,9 +594,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.ttsPaused {
 				return m, nil // don't schedule next tick while paused
 			}
-			return m, coretts.SyncedWordTickCmd(m.ttsDurations, msg.Index+1)
+			return m, coretts.SyncedWordTickCmd(m.ttsDurations, msg.Index+1, m.ttsGen)
 		}
-		// Done speaking
+		// All words highlighted — playback finished
 		m.ttsSpeaking = false
 		m.ttsPaused = false
 		m.ttsWordIndex = -1
@@ -608,10 +611,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tts == nil || !m.tts.Available() {
 			return m, nil
 		}
-		if m.tts != nil {
-			m.tts.Stop()
-		}
+		m.tts.Stop()
 		m.ttsPaused = false
+		m.ttsGen++ // invalidate any in-flight ticks from previous session
 		clean := coretts.CleanForTTS(msg.text)
 		words := coretts.SplitWords(clean)
 		m.ttsCleanText = clean
@@ -620,7 +622,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ttsSpeaking = true
 			m.ttsWordIndex = 0
 			m.ttsDurations = synced.WordDurations
-			return m, coretts.WaitForTTSStart(synced.Started)
+			return m, coretts.WaitForTTSStart(synced.Started, m.ttsGen)
 		}
 		return m, nil
 
@@ -799,10 +801,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "s":
 			if m.tts != nil && m.tts.Available() {
-				if m.tts != nil {
-					m.tts.Stop()
-				}
+				m.tts.Stop()
 				m.ttsPaused = false
+				m.ttsGen++ // new session — invalidate any queued ticks
 				clean := m.ttsCleanText
 				if clean == "" {
 					clean = coretts.CleanForTTS(m.currentChapter.Content)
@@ -813,16 +814,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.ttsSpeaking = true
 					m.ttsWordIndex = 0
 					m.ttsDurations = synced.WordDurations
-					return m, coretts.WaitForTTSStart(synced.Started)
+					return m, coretts.WaitForTTSStart(synced.Started, m.ttsGen)
 				}
 			}
 		case "S":
+			// Always kill audio regardless of ttsSpeaking state — a stale tick
+			// may have cleared ttsSpeaking while sox is still running.
 			if m.tts != nil {
 				m.tts.Stop()
 			}
 			m.ttsSpeaking = false
 			m.ttsPaused = false
 			m.ttsWordIndex = -1
+			m.ttsGen++ // prevent any queued ticks from re-enabling speak
 			m.setReaderContent(-1)
 		case " ":
 			return m.toggleTTSPause()
@@ -937,6 +941,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.ttsSpeaking = false
 				m.ttsPaused = false
 				m.ttsWordIndex = -1
+				m.ttsGen++ // invalidate queued ticks
 				m.setAIContent(-1)
 				return m, nil
 			case " ":
@@ -996,18 +1001,24 @@ func (m *Model) setAIContent(wordIdx int) {
 }
 
 // toggleTTSPause pauses or resumes TTS playback and the word-advance ticker.
+// Works even if m.ttsSpeaking was prematurely cleared by a stale tick.
 func (m Model) toggleTTSPause() (Model, tea.Cmd) {
-	if m.tts == nil || !m.ttsSpeaking {
+	if m.tts == nil {
 		return m, nil
 	}
-	if m.ttsPaused {
+	if m.ttsPaused || m.tts.IsPaused() {
 		m.tts.Resume()
 		m.ttsPaused = false
-		// Restart the word-advance ticker from the current position
-		return m, coretts.SyncedWordTickCmd(m.ttsDurations, m.ttsWordIndex+1)
+		if m.ttsSpeaking {
+			// Restart the word-advance ticker from the current position
+			return m, coretts.SyncedWordTickCmd(m.ttsDurations, m.ttsWordIndex+1, m.ttsGen)
+		}
+		return m, nil
 	}
-	m.tts.Pause()
-	m.ttsPaused = true
+	if m.ttsSpeaking || m.tts.IsPlaying() {
+		m.tts.Pause()
+		m.ttsPaused = true
+	}
 	return m, nil
 }
 
@@ -1053,6 +1064,7 @@ func (m Model) jumpToWord(wordIdx int) (Model, tea.Cmd) {
 	}
 	m.tts.Stop()
 	m.ttsPaused = false
+	m.ttsGen++ // invalidate any in-flight ticks from the old session
 	remainingWords := m.ttsWords[wordIdx:]
 	remainingText := strings.Join(remainingWords, " ")
 	if synced, err := m.tts.SpeakSynced(remainingText, remainingWords); err == nil {
@@ -1064,7 +1076,7 @@ func (m Model) jumpToWord(wordIdx int) (Model, tea.Cmd) {
 		} else if m.state == StateAI {
 			m.setAIContent(wordIdx)
 		}
-		return m, coretts.WaitForTTSStart(synced.Started)
+		return m, coretts.WaitForTTSStart(synced.Started, m.ttsGen)
 	}
 	return m, nil
 }

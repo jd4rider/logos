@@ -11,10 +11,15 @@ tea "github.com/charmbracelet/bubbletea"
 )
 
 // WordAdvanceMsg is sent to advance the highlighted word.
-type WordAdvanceMsg struct{ Index int }
+// Gen must match the current ttsGen in the model; stale messages are discarded.
+type WordAdvanceMsg struct {
+Index int
+Gen   int
+}
 
 // TTSStartedMsg is sent when the TTS engine begins producing audio.
-type TTSStartedMsg struct{}
+// Gen must match the current ttsGen in the model.
+type TTSStartedMsg struct{ Gen int }
 
 var (
 verseNumRe = regexp.MustCompile(`\[(\d+)\]`)
@@ -56,10 +61,11 @@ return words
 }
 
 // WaitForTTSStart blocks until the engine signals audio has begun, then sends TTSStartedMsg.
-func WaitForTTSStart(started <-chan struct{}) tea.Cmd {
+// gen is the current TTS session generation; it is echoed back so stale sessions can be discarded.
+func WaitForTTSStart(started <-chan struct{}, gen int) tea.Cmd {
 return func() tea.Msg {
 <-started
-return TTSStartedMsg{}
+return TTSStartedMsg{Gen: gen}
 }
 }
 
@@ -137,28 +143,29 @@ durations[i] -= take
 return durations
 }
 
-// SyncedWordTickCmd fires WordAdvanceMsg{idx} after the measured duration for
-// words[idx-1]. Uses pre-computed per-word durations from ComputeSyncedDurations.
-func SyncedWordTickCmd(durations []time.Duration, idx int) tea.Cmd {
+// SyncedWordTickCmd fires WordAdvanceMsg{idx, gen} after the measured duration for
+// words[idx-1].  gen is the current TTS session generation; stale messages are
+// automatically discarded by the model's WordAdvanceMsg handler.
+func SyncedWordTickCmd(durations []time.Duration, idx int, gen int) tea.Cmd {
 if idx <= 0 || idx > len(durations) {
 return nil
 }
 d := durations[idx-1]
 capture := idx
 return tea.Tick(d, func(time.Time) tea.Msg {
-return WordAdvanceMsg{Index: capture}
+return WordAdvanceMsg{Index: capture, Gen: gen}
 })
 }
 
 // WordTickCmd is the fallback estimator (used for say/kokoro when no pre-synthesis).
-func WordTickCmd(words []string, idx int) tea.Cmd {
+func WordTickCmd(words []string, idx int, gen int) tea.Cmd {
 if idx <= 0 || idx > len(words) {
 return nil
 }
 d := estimateWordDuration(words[idx-1])
 capture := idx
 return tea.Tick(d, func(time.Time) tea.Msg {
-return WordAdvanceMsg{Index: capture}
+return WordAdvanceMsg{Index: capture, Gen: gen}
 })
 }
 
