@@ -3,27 +3,48 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/api"
+	"github.com/jd4rider/logos/internal/crawler"
 	localdb "github.com/jd4rider/logos/internal/db"
-	"github.com/jd4rider/logos/internal/tts"
+	"github.com/jd4rider/logos/internal/importer"
+	"github.com/jd4rider/logos/internal/pdf"
+	coretts "github.com/jd4rider/logos/internal/tts"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the main Wails application struct
 type App struct {
-	ctx     context.Context
-	client  *api.Client
-	ttsEng  *tts.Engine
-	localDB *localdb.DB
+	ctx          context.Context
+	client       *api.Client
+	ttsEng       *coretts.Engine
+	localDB      *localdb.DB
+	aiClient     *ai.Client
+	aiCancel     context.CancelFunc
+	importCancel context.CancelFunc
+}
+
+// LibraryEntry represents a saved AI-generated item
+type LibraryEntry struct {
+	Kind    string `json:"kind"` // "devotional" | "sermon" | "note"
+	ID      int64  `json:"id"`
+	Title   string `json:"title"`
+	Ref     string `json:"ref"`
+	Content string `json:"content"`
+	Model   string `json:"model"`
+	Date    string `json:"date"`
 }
 
 // NewApp creates a new App instance
-func NewApp(client *api.Client, ttsEng *tts.Engine) *App {
-	app := &App{client: client, ttsEng: ttsEng}
+func NewApp(client *api.Client, ttsEng *coretts.Engine) *App {
+	app := &App{client: client, ttsEng: ttsEng, aiClient: ai.NewClient()}
 	if db, err := localdb.Open(localdb.DefaultDBPath()); err == nil {
 		app.localDB = db
 	}
@@ -215,6 +236,317 @@ func (a *App) StopSpeaking() {
 // IsSpeaking returns whether TTS is currently active
 func (a *App) IsSpeaking() bool {
 	return a.ttsEng.IsPlaying()
+}
+
+// PauseSpeaking pauses TTS playback
+func (a *App) PauseSpeaking() { a.ttsEng.Pause() }
+
+// ResumeSpeaking resumes paused TTS playback
+func (a *App) ResumeSpeaking() { a.ttsEng.Resume() }
+
+// IsPaused returns whether TTS is currently paused
+func (a *App) IsPaused() bool { return a.ttsEng.IsPaused() }
+
+// ListVoices returns all available TTS voices
+func (a *App) ListVoices() []coretts.VoiceEntry { return a.ttsEng.ListVoices() }
+
+// GetActiveVoice returns the currently active voice
+func (a *App) GetActiveVoice() coretts.VoiceEntry { return a.ttsEng.ActiveVoice() }
+
+// SetVoice sets the active voice by ID
+func (a *App) SetVoice(voiceID string) {
+	for _, v := range a.ttsEng.ListVoices() {
+		if v.ID == voiceID {
+			a.ttsEng.SetVoiceEntry(v)
+			return
+		}
+	}
+}
+
+// GetTTSRate returns current speech rate in WPM
+func (a *App) GetTTSRate() int { return a.ttsEng.Rate() }
+
+// SetTTSRate sets speech rate in WPM
+func (a *App) SetTTSRate(rate int) { a.ttsEng.SetRate(rate) }
+
+// SpeakSynced synthesizes text, waits for audio to start, then returns word
+// durations in milliseconds. The frontend uses these to drive word highlighting.
+func (a *App) SpeakSynced(text string) ([]int64, error) {
+	clean := coretts.CleanForTTS(text)
+	words := coretts.SplitWords(clean)
+	synced, err := a.ttsEng.SpeakSynced(clean, words)
+	if err != nil {
+		return nil, err
+	}
+	<-synced.Started
+	durs := make([]int64, len(synced.WordDurations))
+	for i, d := range synced.WordDurations {
+		durs[i] = d.Milliseconds()
+	}
+	return durs, nil
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+
+// IsAIAvailable returns whether the AI backend (Ollama) is reachable
+func (a *App) IsAIAvailable() bool {
+	if a.aiClient == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return a.aiClient.IsAvailable(ctx)
+}
+
+// ListAIModels returns available Ollama models
+func (a *App) ListAIModels() []string {
+	if a.aiClient == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	models, _ := a.aiClient.ListModels(ctx)
+	return models
+}
+
+// StartAIStream starts an AI generation stream. Events emitted:
+//   - "ai:token"  — string payload with each generated token
+//   - "ai:done"   — empty payload when generation completes
+//   - "ai:error"  — string payload with error message
+//
+// action values: "explain_verse" | "explain_chapter" | "devotional" | "sermon" | "ask"
+func (a *App) StartAIStream(action, verseRef, verseText, chapterText, bookName, chapterNum, translation, userInput string) {
+	if a.aiCancel != nil {
+		a.aiCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	a.aiCancel = cancel
+
+	go func() {
+		defer cancel()
+
+		vCtx := ai.VerseContext{
+			Reference:   verseRef,
+			Text:        verseText,
+			Translation: translation,
+		}
+
+		var tokens <-chan string
+		var errc <-chan error
+		switch action {
+		case "explain_verse":
+			tokens, errc = a.aiClient.ExplainVerse(ctx, vCtx)
+		case "explain_chapter":
+			tokens, errc = a.aiClient.ExplainChapter(ctx, bookName, chapterNum, translation, chapterText)
+		case "devotional":
+			tokens, errc = a.aiClient.GenerateDevotional(ctx, vCtx, "")
+		case "sermon":
+			tokens, errc = a.aiClient.GenerateSermon(ctx, vCtx, "")
+		case "ask":
+			tokens, errc = a.aiClient.AskAboutVerse(ctx, userInput, vCtx)
+		default:
+			runtime.EventsEmit(a.ctx, "ai:error", "unknown action: "+action)
+			return
+		}
+
+		for {
+			select {
+			case t, ok := <-tokens:
+				if !ok {
+					runtime.EventsEmit(a.ctx, "ai:done", "")
+					return
+				}
+				runtime.EventsEmit(a.ctx, "ai:token", t)
+			case err, ok := <-errc:
+				if ok && err != nil {
+					runtime.EventsEmit(a.ctx, "ai:error", err.Error())
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// StopAIStream cancels any running AI generation
+func (a *App) StopAIStream() {
+	if a.aiCancel != nil {
+		a.aiCancel()
+		a.aiCancel = nil
+	}
+}
+
+// ── Library ───────────────────────────────────────────────────────────────────
+
+// SaveToLibrary saves AI-generated content to the local database
+func (a *App) SaveToLibrary(kind, title, ref, content, model string) error {
+	if a.localDB == nil {
+		return fmt.Errorf("no local database")
+	}
+	now := time.Now()
+	switch kind {
+	case "devotional":
+		_, err := a.localDB.SaveDevotional(localdb.Devotional{
+			Title: title, VerseRef: ref, Content: content, AIModel: model, CreatedAt: now,
+		})
+		return err
+	case "sermon":
+		_, err := a.localDB.SaveSermon(localdb.Sermon{
+			Title: title, ScriptureRef: ref, Content: content, AIModel: model, CreatedAt: now,
+		})
+		return err
+	default:
+		_, err := a.localDB.SaveNote(localdb.AINote{
+			VerseID: ref, Content: content, AIModel: model, CreatedAt: now,
+		})
+		return err
+	}
+}
+
+// ListLibrary returns saved library entries sorted by date descending
+func (a *App) ListLibrary() ([]LibraryEntry, error) {
+	if a.localDB == nil {
+		return nil, nil
+	}
+	var entries []LibraryEntry
+	if devs, err := a.localDB.ListDevotionals(30); err == nil {
+		for _, d := range devs {
+			entries = append(entries, LibraryEntry{
+				Kind: "devotional", ID: d.ID, Title: d.Title,
+				Ref: d.VerseRef, Content: d.Content, Model: d.AIModel,
+				Date: d.CreatedAt.Format("Jan 2, 2006"),
+			})
+		}
+	}
+	if serms, err := a.localDB.ListSermons(30); err == nil {
+		for _, s := range serms {
+			entries = append(entries, LibraryEntry{
+				Kind: "sermon", ID: s.ID, Title: s.Title,
+				Ref: s.ScriptureRef, Content: s.Content, Model: s.AIModel,
+				Date: s.CreatedAt.Format("Jan 2, 2006"),
+			})
+		}
+	}
+	if notes, err := a.localDB.ListAllNotes(30); err == nil {
+		for _, n := range notes {
+			t := n.Content
+			if len(t) > 60 {
+				t = t[:60] + "…"
+			}
+			entries = append(entries, LibraryEntry{
+				Kind: "note", ID: n.ID, Title: t,
+				Ref: n.VerseID, Content: n.Content, Model: n.AIModel,
+				Date: n.CreatedAt.Format("Jan 2, 2006"),
+			})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Date > entries[j].Date })
+	return entries, nil
+}
+
+// ExportPDF exports AI-generated content to a PDF on the Desktop
+func (a *App) ExportPDF(kind, title, ref, content string) (string, error) {
+	home, _ := os.UserHomeDir()
+	outDir := filepath.Join(home, "Desktop")
+	_ = os.MkdirAll(outDir, 0o755)
+	ts := time.Now().Format("20060102-150405")
+	var outPath string
+	var err error
+	switch kind {
+	case "devotional":
+		outPath = filepath.Join(outDir, "logos-devotional-"+ts+".pdf")
+		err = pdf.ExportDevotional(title, ref, "", content, outPath)
+	case "sermon":
+		outPath = filepath.Join(outDir, "logos-sermon-"+ts+".pdf")
+		err = pdf.ExportSermon(title, ref, content, outPath)
+	default:
+		outPath = filepath.Join(outDir, "logos-note-"+ts+".pdf")
+		err = pdf.ExportNote(ref, content, outPath)
+	}
+	if err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
+
+// ── Import ────────────────────────────────────────────────────────────────────
+
+// ImportBibleURL crawls a Bible website and imports it into the local database.
+// Events: "import:progress" (string), "import:done", "import:error" (string)
+func (a *App) ImportBibleURL(url, name, abbr, lang string) {
+	if a.importCancel != nil {
+		a.importCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	a.importCancel = cancel
+	go func() {
+		defer cancel()
+		opts := crawler.Options{
+			Name:         name,
+			Abbreviation: abbr,
+			Language:     lang,
+			Progress: func(msg string) {
+				runtime.EventsEmit(a.ctx, "import:progress", msg)
+			},
+		}
+		if err := crawler.Crawl(a.localDB, url, opts); err != nil {
+			runtime.EventsEmit(a.ctx, "import:error", err.Error())
+			return
+		}
+		runtime.EventsEmit(ctx, "import:done", "Import complete")
+	}()
+}
+
+// ImportBibleFile imports a local CSV or SQLite Bible file.
+// Events: "import:progress" (string), "import:done", "import:error" (string)
+func (a *App) ImportBibleFile(path, name, abbr, lang string) {
+	if a.importCancel != nil {
+		a.importCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	a.importCancel = cancel
+	go func() {
+		defer cancel()
+		opts := importer.ImportOptions{
+			Name:         name,
+			Abbreviation: abbr,
+			Language:     lang,
+			Progress: func(msg string) {
+				runtime.EventsEmit(a.ctx, "import:progress", msg)
+			},
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		var err error
+		if ext == ".csv" || ext == ".tsv" {
+			err = importer.ImportCSV(a.localDB, path, opts)
+		} else {
+			err = importer.ImportSQLiteFile(a.localDB, path, opts)
+		}
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "import:error", err.Error())
+			return
+		}
+		runtime.EventsEmit(ctx, "import:done", "Import complete")
+	}()
+}
+
+// CancelImport cancels a running import
+func (a *App) CancelImport() {
+	if a.importCancel != nil {
+		a.importCancel()
+		a.importCancel = nil
+	}
+}
+
+// OpenFileDialog opens a native file picker dialog
+func (a *App) OpenFileDialog() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Bible File",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Bible Files (*.csv, *.db, *.sqlite)", Pattern: "*.csv;*.db;*.sqlite;*.sqlite3"},
+		},
+	})
 }
 
 func (a *App) isLocalTranslation(translationID string) bool {

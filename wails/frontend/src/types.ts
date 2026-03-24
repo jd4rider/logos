@@ -79,3 +79,21 @@ export interface SearchData {
   verseCount: number;
   verses: SearchVerse[];
 }
+
+export interface VoiceEntry {
+  name: string;
+  id: string;
+  engine: string;
+}
+
+export interface LibraryEntry {
+  kind: string; // "devotional" | "sermon" | "note"
+  id: number;
+  title: string;
+  ref: string;
+  content: string;
+  model: string;
+  date: string;
+}
+
+export type AIAction = 'explain_verse' | 'explain_chapter' | 'devotional' | 'sermon' | 'ask' | 'library';

@@ -21,3 +21,51 @@ export function Search(arg1:string,arg2:string,arg3:number):Promise<api.SearchDa
 export function SpeakText(arg1:string):Promise<void>;
 
 export function StopSpeaking():Promise<void>;
+
+// ── TTS enhanced ──────────────────────────────────────────────────────────────
+
+export function PauseSpeaking():Promise<void>;
+
+export function ResumeSpeaking():Promise<void>;
+
+export function IsPaused():Promise<boolean>;
+
+export function ListVoices():Promise<Array<{name:string; id:string; engine:string}>>;
+
+export function GetActiveVoice():Promise<{name:string; id:string; engine:string}>;
+
+export function SetVoice(arg1:string):Promise<void>;
+
+export function GetTTSRate():Promise<number>;
+
+export function SetTTSRate(arg1:number):Promise<void>;
+
+export function SpeakSynced(arg1:string):Promise<Array<number>>;
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+
+export function IsAIAvailable():Promise<boolean>;
+
+export function ListAIModels():Promise<Array<string>>;
+
+export function StartAIStream(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string):Promise<void>;
+
+export function StopAIStream():Promise<void>;
+
+// ── Library ───────────────────────────────────────────────────────────────────
+
+export function SaveToLibrary(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function ListLibrary():Promise<Array<{kind:string; id:number; title:string; ref:string; content:string; model:string; date:string}>>;
+
+export function ExportPDF(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
+// ── Import ────────────────────────────────────────────────────────────────────
+
+export function ImportBibleURL(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function ImportBibleFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function CancelImport():Promise<void>;
+
+export function OpenFileDialog():Promise<string>;

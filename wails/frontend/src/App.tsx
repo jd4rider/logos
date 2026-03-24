@@ -5,6 +5,8 @@ import Sidebar from './components/Sidebar';
 import Reader from './components/Reader';
 import SearchPanel from './components/SearchPanel';
 import TTSBar from './components/TTSBar';
+import AIPanel from './components/AIPanel';
+import ImporterModal from './components/ImporterModal';
 
 type View = 'bibles' | 'books' | 'chapters' | 'reader' | 'search';
 
@@ -14,44 +16,6 @@ function DetailRow({ label, value }: { label: string; value: string }) {
       <span className="text-xs uppercase tracking-wider text-muted">{label}</span>
       <span className="text-right text-sm text-text">{value}</span>
     </div>
-  );
-}
-
-function SettingsPlaceholder() {
-  const items = [
-    {
-      title: 'Startup Window',
-      description: 'Opens visible and maximized on launch without entering fullscreen.',
-    },
-    {
-      title: 'Reader Layout',
-      description: 'Reserved for pane behavior, default focus, and reading layout controls.',
-    },
-    {
-      title: 'Speech',
-      description: 'Reserved for voice defaults, pause behavior, and sync tuning.',
-    },
-    {
-      title: 'AI',
-      description: 'Reserved for future TUI parity features, providers, and prompts.',
-    },
-  ];
-
-  return (
-    <section className="bg-surface border border-border rounded-lg p-4">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="text-sm font-semibold text-gold uppercase tracking-wider">Settings</h2>
-        <span className="text-[11px] uppercase tracking-wider text-muted">Placeholder</span>
-      </div>
-      <div className="space-y-3">
-        {items.map((item) => (
-          <div key={item.title} className="rounded-md border border-border/70 bg-bg/40 px-3 py-3">
-            <div className="text-sm font-medium text-text">{item.title}</div>
-            <div className="mt-1 text-xs leading-5 text-muted">{item.description}</div>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -67,6 +31,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSearch, setShowSearch] = useState(false);
+  const [highlightWordIndex, setHighlightWordIndex] = useState(-1);
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [showImporter, setShowImporter] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -113,6 +80,7 @@ export default function App() {
   const loadChapterById = useCallback(async (chapterId: string) => {
     if (!currentBible) return;
     setLoading(true);
+    setHighlightWordIndex(-1);
     try {
       const ch = await GetChapter(currentBible.id, chapterId);
       setCurrentChapter(ch);
@@ -136,10 +104,16 @@ export default function App() {
       ].filter(Boolean).join(' / ')
     : 'No selection yet';
 
+  // Build verse context for AI panel
+  const verseRef = currentChapter
+    ? `${currentBook?.name ?? ''} ${currentChapter.number}`
+    : '';
+  const verseText = '';
+
   return (
     <div className="flex flex-col h-screen bg-bg text-text">
-      <header className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border" style={{WebkitAppRegion: 'drag'} as React.CSSProperties}>
-        <div className="flex items-center gap-3" style={{WebkitAppRegion: 'no-drag'} as React.CSSProperties}>
+      <header className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+        <div className="flex items-center gap-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <span className="text-gold font-bold text-xl">✝ Bible Reader</span>
           {currentBible && (
             <span className="text-accent text-sm">
@@ -149,7 +123,21 @@ export default function App() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2" style={{WebkitAppRegion: 'no-drag'} as React.CSSProperties}>
+        <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {view === 'reader' && (
+            <button
+              onClick={() => setShowAIPanel(!showAIPanel)}
+              className={`px-3 py-1 text-sm border rounded transition-colors ${showAIPanel ? 'border-gold text-gold bg-highlight' : 'bg-highlight text-accent border-border hover:border-gold'}`}
+            >
+              ✝ AI
+            </button>
+          )}
+          <button
+            onClick={() => setShowImporter(true)}
+            className="px-3 py-1 text-sm bg-highlight text-accent border border-border rounded hover:border-gold transition-colors"
+          >
+            📥 Import
+          </button>
           {(view === 'reader' || view === 'books') && (
             <button
               onClick={() => setShowSearch(!showSearch)}
@@ -205,11 +193,12 @@ export default function App() {
             />
           ) : view === 'reader' && currentChapter ? (
             <>
-              <Reader chapter={currentChapter} />
+              <Reader chapter={currentChapter} highlightWordIndex={highlightWordIndex} />
               <TTSBar
                 chapter={currentChapter}
                 onNext={currentChapter.next ? () => loadChapterById(currentChapter.next!.id) : undefined}
                 onPrev={currentChapter.previous ? () => loadChapterById(currentChapter.previous!.id) : undefined}
+                onWordIndex={setHighlightWordIndex}
               />
             </>
           ) : view === 'bibles' && !loading ? (
@@ -227,23 +216,55 @@ export default function App() {
           ) : null}
         </main>
 
-        <aside className="w-80 border-l border-border bg-surface/70 backdrop-blur-sm overflow-y-auto flex-shrink-0">
-          <div className="p-4 space-y-4">
-            <section className="bg-surface border border-border rounded-lg p-4">
-              <div className="flex items-center justify-between gap-3 mb-3">
-                <h2 className="text-sm font-semibold text-gold uppercase tracking-wider">Status</h2>
-                <span className="text-[11px] uppercase tracking-wider text-muted">{loading ? 'Loading' : 'Ready'}</span>
-              </div>
-              <DetailRow label="View" value={showSearch ? 'Search' : view} />
-              <DetailRow label="Location" value={locationSummary} />
-              <DetailRow label="Translation" value={currentBible?.name ?? 'Choose a Bible'} />
-              <DetailRow label="Search" value={showSearch ? 'Open' : 'Closed'} />
-            </section>
-
-            <SettingsPlaceholder />
-          </div>
-        </aside>
+        {/* Right: AI panel or status panel */}
+        {showAIPanel && currentChapter ? (
+          <AIPanel
+            verseRef={`${currentBook?.name ?? ''} ${currentChapter.number}`}
+            verseText=""
+            chapterText={currentChapter.content}
+            bookName={currentBook?.name ?? ''}
+            chapterNum={currentChapter.number}
+            translation={currentBible?.abbreviation ?? ''}
+            onClose={() => setShowAIPanel(false)}
+          />
+        ) : (
+          <aside className="w-72 border-l border-border bg-surface/70 backdrop-blur-sm overflow-y-auto flex-shrink-0">
+            <div className="p-4 space-y-4">
+              <section className="bg-surface border border-border rounded-lg p-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h2 className="text-sm font-semibold text-gold uppercase tracking-wider">Status</h2>
+                  <span className="text-[11px] uppercase tracking-wider text-muted">{loading ? 'Loading' : 'Ready'}</span>
+                </div>
+                <DetailRow label="View" value={showSearch ? 'Search' : view} />
+                <DetailRow label="Location" value={locationSummary} />
+                <DetailRow label="Translation" value={currentBible?.name ?? 'Choose a Bible'} />
+              </section>
+              {view === 'reader' && (
+                <section className="bg-surface border border-border rounded-lg p-4">
+                  <h2 className="text-sm font-semibold text-gold uppercase tracking-wider mb-3">AI Study</h2>
+                  <button
+                    onClick={() => setShowAIPanel(true)}
+                    className="w-full py-2 text-sm border border-border rounded hover:border-gold hover:text-gold text-muted transition-colors"
+                  >
+                    ✦ Open AI Panel
+                  </button>
+                </section>
+              )}
+              <section className="bg-surface border border-border rounded-lg p-4">
+                <h2 className="text-sm font-semibold text-gold uppercase tracking-wider mb-3">Import</h2>
+                <button
+                  onClick={() => setShowImporter(true)}
+                  className="w-full py-2 text-sm border border-border rounded hover:border-gold hover:text-gold text-muted transition-colors"
+                >
+                  📥 Import Bible
+                </button>
+              </section>
+            </div>
+          </aside>
+        )}
       </div>
+
+      {showImporter && <ImporterModal onClose={() => setShowImporter(false)} />}
     </div>
   );
 }

@@ -41,3 +41,91 @@ export function SpeakText(arg1) {
 export function StopSpeaking() {
   return window['go']['main']['App']['StopSpeaking']();
 }
+
+// ── TTS enhanced ──────────────────────────────────────────────────────────────
+
+export function PauseSpeaking() {
+  return window['go']['main']['App']['PauseSpeaking']();
+}
+
+export function ResumeSpeaking() {
+  return window['go']['main']['App']['ResumeSpeaking']();
+}
+
+export function IsPaused() {
+  return window['go']['main']['App']['IsPaused']();
+}
+
+export function ListVoices() {
+  return window['go']['main']['App']['ListVoices']();
+}
+
+export function GetActiveVoice() {
+  return window['go']['main']['App']['GetActiveVoice']();
+}
+
+export function SetVoice(arg1) {
+  return window['go']['main']['App']['SetVoice'](arg1);
+}
+
+export function GetTTSRate() {
+  return window['go']['main']['App']['GetTTSRate']();
+}
+
+export function SetTTSRate(arg1) {
+  return window['go']['main']['App']['SetTTSRate'](arg1);
+}
+
+export function SpeakSynced(arg1) {
+  return window['go']['main']['App']['SpeakSynced'](arg1);
+}
+
+// ── AI ────────────────────────────────────────────────────────────────────────
+
+export function IsAIAvailable() {
+  return window['go']['main']['App']['IsAIAvailable']();
+}
+
+export function ListAIModels() {
+  return window['go']['main']['App']['ListAIModels']();
+}
+
+export function StartAIStream(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['StartAIStream'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function StopAIStream() {
+  return window['go']['main']['App']['StopAIStream']();
+}
+
+// ── Library ───────────────────────────────────────────────────────────────────
+
+export function SaveToLibrary(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SaveToLibrary'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ListLibrary() {
+  return window['go']['main']['App']['ListLibrary']();
+}
+
+export function ExportPDF(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ExportPDF'](arg1, arg2, arg3, arg4);
+}
+
+// ── Import ────────────────────────────────────────────────────────────────────
+
+export function ImportBibleURL(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ImportBibleURL'](arg1, arg2, arg3, arg4);
+}
+
+export function ImportBibleFile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ImportBibleFile'](arg1, arg2, arg3, arg4);
+}
+
+export function CancelImport() {
+  return window['go']['main']['App']['CancelImport']();
+}
+
+export function OpenFileDialog() {
+  return window['go']['main']['App']['OpenFileDialog']();
+}

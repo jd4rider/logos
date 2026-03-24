@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/jd4rider/logos/internal/api"
-	"github.com/jd4rider/logos/internal/tts"
+	coretts "github.com/jd4rider/logos/internal/tts"
 
 	"github.com/joho/godotenv"
 	"github.com/wailsapp/wails/v2"
@@ -24,7 +24,7 @@ func main() {
 	piperModel := os.Getenv("PIPER_MODEL")
 
 	client := api.NewClient(apiKey)
-	ttsEng := tts.New(piperModel)
+	ttsEng := coretts.New(piperModel)
 	app := NewApp(client, ttsEng)
 
 	err := wails.Run(&options.App{
