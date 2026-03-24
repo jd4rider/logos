@@ -18,6 +18,7 @@ import (
 	"github.com/jd4rider/logos/internal/ai"
 	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/pdf"
+	coretts "github.com/jd4rider/logos/internal/tts"
 )
 
 // ── Sub-states ────────────────────────────────────────────────────────────────
@@ -99,6 +100,10 @@ type AIPanel struct {
 	tokenCh  chan string // goroutine → BubbleTea
 	cancel   context.CancelFunc
 
+	// background TTS precache (runs while/after AI generation)
+	ttsEngine      *coretts.Engine
+	precacheCancel context.CancelFunc
+
 	vp   viewport.Model
 	spin spinner.Model
 
@@ -152,6 +157,12 @@ func (p *AIPanel) SetSize(w, h int) {
 	p.input.SetWidth(w - 8)
 }
 
+// SetTTSEngine attaches the TTS engine so the panel can pre-synthesise audio
+// in the background while (or after) AI content is generated.
+func (p *AIPanel) SetTTSEngine(engine *coretts.Engine) {
+	p.ttsEngine = engine
+}
+
 func (p *AIPanel) Reset() {
 	p.sub     = aiMenu
 	p.menuIdx = 0
@@ -160,6 +171,52 @@ func (p *AIPanel) Reset() {
 	p.saved = ""
 	p.input.Reset()
 	p.stopStream()
+	p.cancelPrecache()
+}
+
+// cancelPrecache stops any in-progress background TTS pre-synthesis.
+func (p *AIPanel) cancelPrecache() {
+	if p.precacheCancel != nil {
+		p.precacheCancel()
+		p.precacheCancel = nil
+	}
+}
+
+// startPrecache launches a background goroutine that synthesises TTS audio for
+// the current streamed content and stores it in the engine's disk cache.
+// When the user later presses "s" to read aloud, SpeakSynced will find the
+// audio already cached and begin playing instantly.
+func (p *AIPanel) startPrecache() {
+	p.cancelPrecache() // cancel any previous run
+
+	engine := p.ttsEngine
+	if engine == nil || !engine.Available() {
+		return
+	}
+	text := strings.TrimSpace(p.streamed.String())
+	if text == "" {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.precacheCancel = cancel
+
+	go func() {
+		defer cancel()
+		clean := coretts.CleanForTTS(text)
+		words := coretts.SplitWords(clean)
+		if len(words) == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		// Precache returns immediately if already cached, so this is a no-op
+		// on the happy path where the user presses "s" quickly after generation.
+		_ = engine.Precache(clean, words)
+	}()
 }
 
 func (p *AIPanel) stopStream() {
@@ -173,6 +230,7 @@ func (p *AIPanel) stopStream() {
 		}
 		p.tokenCh = nil
 	}
+	p.cancelPrecache()
 }
 
 func (p *AIPanel) Init() tea.Cmd {
@@ -219,6 +277,11 @@ func (p *AIPanel) Update(msg tea.Msg) (*AIPanel, tea.Cmd) {
 			p.err = msg.err
 		}
 		p.vp.SetContent(wrapText(p.streamed.String(), p.vp.Width))
+		// Kick off background TTS pre-synthesis so audio is cached and ready
+		// instantly when the user presses "s" to read aloud.
+		if msg.err == nil {
+			p.startPrecache()
+		}
 
 	case aiSavedMsg:
 		p.sub = aiSaving

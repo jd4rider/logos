@@ -642,3 +642,116 @@ return nil
 
 // Cache returns the engine's audio cache (for CLI stats/management).
 func (e *Engine) Cache() *AudioCache { return e.cache }
+
+// Precache synthesises text and stores the result in the audio cache WITHOUT
+// starting playback.  It is safe to call from a background goroutine while
+// playback is active — it snapshots the current voice/rate under a short lock,
+// then runs the (potentially slow) synthesis subprocess WITHOUT holding the
+// mutex, so it never blocks the main TTS path.
+//
+// Returns nil if the text is already cached (nothing to do) or on success.
+func (e *Engine) Precache(text string, words []string) error {
+// Snapshot engine settings under a brief lock so we don't block playback.
+e.mu.Lock()
+eng        := e.activeEngine
+voiceID    := e.activeVoice.ID
+voiceName  := e.activeVoice.Name
+rate       := e.rate
+piperModel := e.piperModel
+kokoroVoices := e.kokoroVoices
+e.mu.Unlock()
+
+if eng == "none" || eng == "" || eng == "say" {
+// 'say' can't be pre-synthesised; skip.
+return nil
+}
+
+switch eng {
+case "piper":
+return e.precachePiper(text, words, voiceID, voiceName, rate, piperModel)
+case "kokoro":
+return e.precacheKokoro(text, words, voiceID, voiceName, rate, kokoroVoices)
+}
+return nil
+}
+
+func (e *Engine) precachePiper(text string, words []string, voiceID, voiceName string, rate int, model string) error {
+const sampleRate = 22050
+cacheKey := CacheKey("piper", voiceID, rate, text)
+if _, _, ok := e.cache.Get(cacheKey); ok {
+return nil // already cached
+}
+synth := exec.Command("piper", "--output-raw", "--model", model)
+synth.Stdin  = strings.NewReader(text)
+synth.Stderr = io.Discard
+pcm, err := synth.Output()
+if err != nil {
+return fmt.Errorf("piper precache: %w", err)
+}
+if len(pcm) == 0 {
+return nil
+}
+dur := time.Duration(len(pcm)/2) * time.Second / sampleRate
+preview := text
+if len(preview) > 80 {
+preview = preview[:80]
+}
+e.cache.Put(cacheKey, pcm, CacheMeta{
+Hash:        cacheKey,
+Engine:      "piper",
+VoiceID:     voiceID,
+VoiceName:   voiceName,
+Rate:        rate,
+SampleRate:  sampleRate,
+TextPreview: preview,
+TextLen:     len(text),
+WordCount:   len(words),
+DurationMs:  dur.Milliseconds(),
+PCMBytes:    len(pcm),
+CreatedAt:   time.Now(),
+LastAccess:  time.Now(),
+AccessCount: 0,
+})
+return nil
+}
+
+func (e *Engine) precacheKokoro(text string, words []string, voiceID, voiceName string, rate int, _ string) error {
+const sampleRate = 24000
+speed := fmt.Sprintf("%.2f", float64(rate)/150.0)
+cacheKey := CacheKey("kokoro", voiceID, rate, text)
+if _, _, ok := e.cache.Get(cacheKey); ok {
+return nil // already cached
+}
+synth := exec.Command("kokoro-speak", voiceID, speed)
+synth.Stdin  = strings.NewReader(text)
+synth.Stderr = io.Discard
+pcm, err := synth.Output()
+if err != nil {
+return fmt.Errorf("kokoro precache: %w", err)
+}
+if len(pcm) == 0 {
+return nil
+}
+dur := time.Duration(len(pcm)/2) * time.Second / sampleRate
+preview := text
+if len(preview) > 80 {
+preview = preview[:80]
+}
+e.cache.Put(cacheKey, pcm, CacheMeta{
+Hash:        cacheKey,
+Engine:      "kokoro",
+VoiceID:     voiceID,
+VoiceName:   voiceName,
+Rate:        rate,
+SampleRate:  sampleRate,
+TextPreview: preview,
+TextLen:     len(text),
+WordCount:   len(words),
+DurationMs:  dur.Milliseconds(),
+PCMBytes:    len(pcm),
+CreatedAt:   time.Now(),
+LastAccess:  time.Now(),
+AccessCount: 0,
+})
+return nil
+}
