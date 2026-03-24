@@ -23,12 +23,17 @@ extraSpace = regexp.MustCompile(`\s{2,}`)
 )
 
 // CleanForTTS converts raw chapter content to spoken prose.
-// Verse numbers become "Verse N." sentences — the trailing period creates a
-// natural sentence-boundary pause in every TTS engine.
+// Verse numbers are replaced with a brief pause marker ("...") so the TTS
+// engine pauses naturally at verse boundaries without announcing numbers.
+// The first verse marker ([1]) is dropped so reading begins immediately.
 func CleanForTTS(content string) string {
+first := true
 s := verseNumRe.ReplaceAllStringFunc(content, func(m string) string {
-num := verseNumRe.FindStringSubmatch(m)[1]
-return "  Verse " + num + ".  "
+if first {
+first = false
+return "  "
+}
+return "...  "
 })
 s = pilcrowRe.ReplaceAllString(s, "  ")
 s = extraSpace.ReplaceAllString(s, "  ")
@@ -157,35 +162,15 @@ return WordAdvanceMsg{Index: capture}
 func estimateWordDuration(word string) time.Duration {
 const baseMs = 400 // 150 WPM baseline (~5-char word)
 
-// ── Verse announcement tokens ──────────────────────────────────────────────
-// Piper/Kokoro spend significant time on these: the word itself plus the
-// sentence-boundary pause Piper inserts before and after.  Give them a large
-// fixed budget so ComputeSyncedDurations allocates them a proportionally big
-// slice of the actual audio.
-if strings.EqualFold(word, "Verse") {
-return 2200 * time.Millisecond
-}
-
-// Verse number token: "1." "42." (1-3 digits + period)
-core := strings.TrimRight(word, ".,;:!?\"'")
-if strings.HasSuffix(word, ".") {
-if _, err := parseDigits(core); err == nil && len(core) >= 1 && len(core) <= 3 {
-return 2000 * time.Millisecond
-}
-}
-// Legacy "1..." format (still in cache from before the format change)
-if strings.HasSuffix(word, "...") {
-core2 := strings.TrimRight(word, ".")
-if _, err := parseDigits(core2); err == nil && len(core2) <= 3 {
-return 2000 * time.Millisecond
-}
-}
-// Lone ellipsis token
+// ── Pause token (verse boundary) ─────────────────────────────────────────
+// "..." is inserted between verses by CleanForTTS; give it a generous budget
+// so the TTS pause is clearly audible between verses.
 if word == "..." {
 return 700 * time.Millisecond
 }
 
 // ── Normal words ───────────────────────────────────────────────────────────
+core := strings.TrimRight(word, ".,;:!?\"'")
 chars := len(core)
 if chars < 1 {
 chars = 1

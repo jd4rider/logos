@@ -733,6 +733,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "esc", "backspace":
 			m.state = StateBooks
+			return m, nil
 		case "/":
 			return m.openSearch()
 		}
@@ -745,6 +746,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.ttsSpeaking = false
 			m.state = StateChapters
+			return m, nil
 		case "s":
 			if m.tts != nil && m.tts.Available() {
 				clean := coretts.CleanForTTS(m.currentChapter.Content)
@@ -810,6 +812,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.state = StateBooks
 			}
+			return m, nil
 		case "/":
 			return m.openSearch()
 		}
@@ -818,6 +821,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "backspace":
 			m.state = m.prevState
+			return m, nil
 		case "enter", "right", "l":
 			if item, ok := m.voiceList.SelectedItem().(voiceItem); ok {
 				if m.tts != nil {
