@@ -1098,13 +1098,19 @@ func renderChapterContent(ch api.ChapterContent, wordIdx int, styles *Styles, wi
 	sb.WriteString(styles.HeaderTitle.Render(ch.Reference))
 	sb.WriteString("\n\n")
 
+	// Clamp usable text width — leave room for lipgloss padding
+	textWidth := width - 4
+	if textWidth < 40 {
+		textWidth = 40
+	}
+
 	wordCounter := 0
 	for _, para := range strings.Split(ch.Content, "\n") {
 		para = strings.TrimSpace(strings.ReplaceAll(para, "¶", ""))
 		if para == "" {
 			continue
 		}
-		sb.WriteString(renderParagraph(para, &wordCounter, wordIdx, styles))
+		sb.WriteString(renderParagraph(para, &wordCounter, wordIdx, styles, textWidth))
 		sb.WriteString("\n\n")
 	}
 
@@ -1116,31 +1122,49 @@ func renderChapterContent(ch api.ChapterContent, wordIdx int, styles *Styles, wi
 	return sb.String()
 }
 
-func renderParagraph(para string, wordCounter *int, wordIdx int, styles *Styles) string {
+func renderParagraph(para string, wordCounter *int, wordIdx int, styles *Styles, textWidth int) string {
 	var sb strings.Builder
 	remaining := para
+	lineLen := 0 // current line length in runes (approximate)
+
+	flushNewline := func() {
+		sb.WriteString("\n")
+		lineLen = 0
+	}
+
 	for len(remaining) > 0 {
 		loc := verseTagRe.FindStringIndex(remaining)
 		if loc == nil {
-			sb.WriteString(renderWords(remaining, wordCounter, wordIdx, styles))
+			sb.WriteString(renderWords(remaining, wordCounter, wordIdx, styles, &lineLen, textWidth, flushNewline))
 			break
 		}
 		if loc[0] > 0 {
-			sb.WriteString(renderWords(remaining[:loc[0]], wordCounter, wordIdx, styles))
+			sb.WriteString(renderWords(remaining[:loc[0]], wordCounter, wordIdx, styles, &lineLen, textWidth, flushNewline))
 		}
 		num := verseTagRe.FindStringSubmatch(remaining[loc[0]:loc[1]])[1]
-		sb.WriteString(styles.VerseNum.Render("[" + num + "]"))
+		tag := "[" + num + "] "
+		// Verse numbers always start a new line (except the very first)
+		if lineLen > 0 {
+			sb.WriteString("\n")
+			lineLen = 0
+		}
+		sb.WriteString(styles.VerseNum.Render("["+num+"]"))
 		sb.WriteString(" ")
+		lineLen += len(tag)
 		remaining = remaining[loc[1]:]
 	}
 	return sb.String()
 }
 
-func renderWords(text string, wordCounter *int, wordIdx int, styles *Styles) string {
+func renderWords(text string, wordCounter *int, wordIdx int, styles *Styles, lineLen *int, textWidth int, newline func()) string {
 	var sb strings.Builder
 	fields := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) })
-	for i, word := range fields {
-		if i > 0 {
+	for _, word := range fields {
+		wlen := len([]rune(word)) + 1 // +1 for the space
+		if *lineLen > 0 && *lineLen+wlen > textWidth {
+			newline()
+		}
+		if *lineLen > 0 {
 			sb.WriteString(" ")
 		}
 		if wordIdx >= 0 && *wordCounter == wordIdx {
@@ -1148,6 +1172,7 @@ func renderWords(text string, wordCounter *int, wordIdx int, styles *Styles) str
 		} else {
 			sb.WriteString(styles.VerseText.Render(word))
 		}
+		*lineLen += wlen
 		*wordCounter++
 	}
 	return sb.String()
@@ -1269,10 +1294,12 @@ func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) 
 // a Bible abbreviation. Handles 3-letter codes (eng, spa, fra, deu, por, zho,
 // hin, ara, rus, kor, jpn, vie, ind, nld, ita, pol, tur, heb, grc) and 2-letter
 // codes (en, es, fr, de, pt). Examples:
-//   "engKJV"  → "KJV"
-//   "spaRVR"  → "RVR"
-//   "espBLA"  → "BLA"  (esp treated same as spa)
-//   "KJV"     → "KJV"  (unchanged)
+//
+//	"engKJV"  → "KJV"
+//	"spaRVR"  → "RVR"
+//	"espBLA"  → "BLA"  (esp treated same as spa)
+//	"KJV"     → "KJV"  (unchanged)
+//	"NLV"     → "NLV"  (not touched — result would be single char)
 func stripLangPrefix(abbr string) string {
 	known3 := []string{
 		"eng", "spa", "esp", "fra", "deu", "ger", "por", "zho", "hin",
@@ -1282,15 +1309,21 @@ func stripLangPrefix(abbr string) string {
 	lower := strings.ToLower(abbr)
 	for _, pfx := range known3 {
 		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
-			return abbr[len(pfx):]
+			result := abbr[len(pfx):]
+			// Only strip if the result is at least 2 characters
+			if len(result) >= 2 {
+				return result
+			}
 		}
 	}
 	known2 := []string{"en", "es", "fr", "de", "pt", "it", "nl", "pl"}
 	for _, pfx := range known2 {
 		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
 			// Only strip if next char is uppercase (e.g. "enWEB" not "enjoy")
-			if abbr[len(pfx)] >= 'A' && abbr[len(pfx)] <= 'Z' {
-				return abbr[len(pfx):]
+			// AND result is at least 2 characters
+			result := abbr[len(pfx):]
+			if len(result) >= 2 && result[0] >= 'A' && result[0] <= 'Z' {
+				return result
 			}
 		}
 	}
