@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -541,6 +542,19 @@ func (p *AIPanel) loadLibraryCmd() tea.Cmd {
 				})
 			}
 		}
+		if notes, err := db.ListAllNotes(20); err == nil {
+			for _, n := range notes {
+				title := truncate(n.Content, 60)
+				entries = append(entries, libraryEntry{
+					kind: "note", id: n.ID, title: title,
+					ref: n.VerseID, content: n.Content, model: n.AIModel, date: n.CreatedAt,
+				})
+			}
+		}
+		// Sort combined list by date descending
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].date.After(entries[j].date)
+		})
 		return libraryLoadedMsg{entries: entries}
 	}
 }
@@ -744,6 +758,16 @@ func renderStudyPlanText(plan *ai.StudyPlan) string {
 		sb.WriteString(w.Notes + "\n\n")
 	}
 	return sb.String()
+}
+
+// truncate returns the first maxLen runes of s, appending "…" if truncated.
+func truncate(s string, maxLen int) string {
+	s = strings.TrimSpace(strings.SplitN(s, "\n", 2)[0]) // first line only
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "…"
 }
 
 // savePlanToLibrary saves a structured study plan to the database.

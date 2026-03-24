@@ -971,24 +971,35 @@ func (m *Model) setReaderContent(wordIdx int) {
 
 // setAIContent renders the AI panel's streamed content with optional TTS word
 // highlighting. wordIdx = -1 means no highlighting.
+//
+// When TTS is active (wordIdx >= 0) we render m.ttsCleanText (the markdown-
+// stripped text that was actually synthesised) so that word indices from
+// m.ttsWords align exactly with what's on screen. When TTS is off we render
+// the raw streamed text so formatting / markdown shows through normally.
 func (m *Model) setAIContent(wordIdx int) {
 	if m.aiPanel == nil {
-		return
-	}
-	text := m.aiPanel.streamed.String()
-	if text == "" {
 		return
 	}
 	w := m.aiPanel.vp.Width
 	if w <= 10 {
 		w = 80
 	}
-	raw := wordwrap.String(text, w)
 	if wordIdx < 0 {
-		m.aiPanel.vp.SetContent(raw)
+		// TTS off — show formatted raw text
+		text := m.aiPanel.streamed.String()
+		if text == "" {
+			return
+		}
+		m.aiPanel.vp.SetContent(wordwrap.String(text, w))
 		return
 	}
-	// Render each wrapped line with the highlighted word injected
+	// TTS active — render the same clean text that was synthesised so that
+	// ttsWordIndex maps to exactly the right word on screen.
+	text := m.ttsCleanText
+	if text == "" {
+		return
+	}
+	raw := wordwrap.String(text, w)
 	wordCounter := 0
 	var sb strings.Builder
 	for i, line := range strings.Split(raw, "\n") {

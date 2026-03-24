@@ -511,6 +511,31 @@ func (d *DB) SaveNote(n AINote) (int64, error) {
 	return res.LastInsertId()
 }
 
+// ListAllNotes returns all AI notes, most recent first.
+func (d *DB) ListAllNotes(limit int) ([]AINote, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.sql.Query(
+		`SELECT id, verse_id, translation_id, content, ai_model, created_at
+		 FROM ai_notes ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AINote
+	for rows.Next() {
+		var n AINote
+		var ts string
+		if err := rows.Scan(&n.ID, &n.VerseID, &n.TranslationID, &n.Content, &n.AIModel, &ts); err != nil {
+			return nil, err
+		}
+		n.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
 // ListNotes returns AI notes for a verse.
 func (d *DB) ListNotes(verseID, translationID string) ([]AINote, error) {
 	rows, err := d.sql.Query(
