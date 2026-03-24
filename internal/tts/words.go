@@ -41,11 +41,14 @@ return strings.TrimSpace(s)
 }
 
 // SplitWords splits cleaned TTS text into individual speakable tokens.
+// Pause-marker tokens ("...") are excluded from the word list: they exist in
+// the TTS text so the engine creates a natural verse-break pause, but they are
+// not real words and should not appear in the highlight index.
 func SplitWords(text string) []string {
 raw := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) })
 words := make([]string, 0, len(raw))
 for _, w := range raw {
-if w != "" {
+if w != "" && w != "..." {
 words = append(words, w)
 }
 }

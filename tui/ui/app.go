@@ -71,6 +71,9 @@ type precacheProgressMsg struct {
 }
 type precacheDoneMsg struct{ translationID string }
 
+// AI TTS messages
+type aiReadAloudMsg struct{ text string }
+
 // ── List items ────────────────────────────────────────────────────────────────
 
 type bibleItem struct {
@@ -175,6 +178,8 @@ type Model struct {
 	ttsDurations []time.Duration // per-word durations calibrated to actual audio
 	ttsWordIndex int
 	ttsSpeaking  bool
+	ttsPaused    bool   // audio paused (SIGSTOP); word tick also halted
+	ttsCleanText string // CleanForTTS output; used for jump-to-word re-synthesis
 
 	// Search overlay
 	inSearch bool
@@ -537,8 +542,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.currentChapter = msg.content
 		m.ttsSpeaking = false
+		m.ttsPaused = false
 		m.ttsWordIndex = -1
-		m.ttsWords = coretts.SplitWords(coretts.CleanForTTS(msg.content.Content))
+		m.ttsCleanText = coretts.CleanForTTS(msg.content.Content)
+		m.ttsWords = coretts.SplitWords(m.ttsCleanText)
 		m.viewport = viewport.New(m.width, m.contentHeight())
 		m.setReaderContent(-1)
 		m.viewport.GotoTop()
@@ -568,17 +575,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ttsWordIndex = msg.Index
-		m.setReaderContent(m.ttsWordIndex)
-		if msg.Index > 0 && msg.Index%40 == 0 {
-			m.viewport.LineDown(2)
+		// Update highlighted word in the appropriate content view
+		if m.state == StateReader {
+			m.setReaderContent(m.ttsWordIndex)
+			if msg.Index > 0 && msg.Index%40 == 0 {
+				m.viewport.LineDown(2)
+			}
+		} else if m.state == StateAI {
+			m.setAIContent(m.ttsWordIndex)
+			if msg.Index > 0 && msg.Index%40 == 0 && m.aiPanel != nil {
+				m.aiPanel.vp.LineDown(2)
+			}
 		}
 		if msg.Index < len(m.ttsWords) {
+			if m.ttsPaused {
+				return m, nil // don't schedule next tick while paused
+			}
 			return m, coretts.SyncedWordTickCmd(m.ttsDurations, msg.Index+1)
 		}
 		// Done speaking
 		m.ttsSpeaking = false
+		m.ttsPaused = false
 		m.ttsWordIndex = -1
-		m.setReaderContent(-1)
+		if m.state == StateReader {
+			m.setReaderContent(-1)
+		} else if m.state == StateAI {
+			m.setAIContent(-1)
+		}
+		return m, nil
+
+	case aiReadAloudMsg:
+		if m.tts == nil || !m.tts.Available() {
+			return m, nil
+		}
+		if m.tts != nil {
+			m.tts.Stop()
+		}
+		m.ttsPaused = false
+		clean := coretts.CleanForTTS(msg.text)
+		words := coretts.SplitWords(clean)
+		m.ttsCleanText = clean
+		m.ttsWords = words
+		if synced, err := m.tts.SpeakSynced(clean, words); err == nil {
+			m.ttsSpeaking = true
+			m.ttsWordIndex = 0
+			m.ttsDurations = synced.WordDurations
+			return m, coretts.WaitForTTSStart(synced.Started)
+		}
 		return m, nil
 
 	case errMsg:
@@ -645,6 +688,12 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseButtonWheelDown:
 		if m.state == StateReader {
 			m.viewport.LineDown(3)
+		}
+	case tea.MouseButtonLeft:
+		// Left-click in reader: jump TTS playback to the clicked word
+		if msg.Action == tea.MouseActionRelease && m.state == StateReader && m.ttsSpeaking {
+			wordIdx := m.wordIdxAtClick(msg.X, msg.Y)
+			return m.jumpToWord(wordIdx)
 		}
 	}
 	return m.updateActiveComponent(msg)
@@ -745,14 +794,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.tts.Stop()
 			}
 			m.ttsSpeaking = false
+			m.ttsPaused = false
 			m.state = StateChapters
 			return m, nil
 		case "s":
 			if m.tts != nil && m.tts.Available() {
-				clean := coretts.CleanForTTS(m.currentChapter.Content)
-				words := coretts.SplitWords(clean)
-				m.ttsWords = words
-				if synced, err := m.tts.SpeakSynced(clean, words); err == nil {
+				if m.tts != nil {
+					m.tts.Stop()
+				}
+				m.ttsPaused = false
+				clean := m.ttsCleanText
+				if clean == "" {
+					clean = coretts.CleanForTTS(m.currentChapter.Content)
+					m.ttsCleanText = clean
+					m.ttsWords = coretts.SplitWords(clean)
+				}
+				if synced, err := m.tts.SpeakSynced(clean, m.ttsWords); err == nil {
 					m.ttsSpeaking = true
 					m.ttsWordIndex = 0
 					m.ttsDurations = synced.WordDurations
@@ -764,8 +821,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.tts.Stop()
 			}
 			m.ttsSpeaking = false
+			m.ttsPaused = false
 			m.ttsWordIndex = -1
 			m.setReaderContent(-1)
+		case " ":
+			return m.toggleTTSPause()
 		case "v":
 			return m.openVoicePicker()
 		case "n", "]":
@@ -774,6 +834,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.tts.Stop()
 				}
 				m.ttsSpeaking = false
+				m.ttsPaused = false
 				m.loading = true
 				m.state = StateLoading
 				return m, tea.Batch(m.spinner.Tick, m.cmdLoadChapter(m.currentChapter.Next.ID))
@@ -784,6 +845,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.tts.Stop()
 				}
 				m.ttsSpeaking = false
+				m.ttsPaused = false
 				m.loading = true
 				m.state = StateLoading
 				return m, tea.Batch(m.spinner.Tick, m.cmdLoadChapter(m.currentChapter.Previous.ID))
@@ -855,6 +917,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = m.prevState
 			return m, nil
 		}
+		// Stop TTS when closing the AI result (going back to menu)
+		if m.ttsSpeaking && m.aiPanel != nil && m.aiPanel.sub == aiResult &&
+			(msg.String() == "esc" || msg.String() == "backspace") {
+			if m.tts != nil {
+				m.tts.Stop()
+			}
+			m.ttsSpeaking = false
+			m.ttsPaused = false
+			m.ttsWordIndex = -1
+		}
+		// TTS controls in the AI result view (intercept before passing to panel)
+		if m.aiPanel != nil && m.aiPanel.sub == aiResult {
+			switch msg.String() {
+			case "S":
+				if m.tts != nil {
+					m.tts.Stop()
+				}
+				m.ttsSpeaking = false
+				m.ttsPaused = false
+				m.ttsWordIndex = -1
+				m.setAIContent(-1)
+				return m, nil
+			case " ":
+				return m.toggleTTSPause()
+			}
+		}
 		if m.aiPanel != nil {
 			var cmd tea.Cmd
 			m.aiPanel, cmd = m.aiPanel.Update(msg)
@@ -874,6 +962,111 @@ func (m *Model) setReaderContent(wordIdx int) {
 	}
 	raw := renderChapterContent(m.currentChapter, wordIdx, m.styles, m.width)
 	m.viewport.SetContent(wordwrap.String(raw, w))
+}
+
+// setAIContent renders the AI panel's streamed content with optional TTS word
+// highlighting. wordIdx = -1 means no highlighting.
+func (m *Model) setAIContent(wordIdx int) {
+	if m.aiPanel == nil {
+		return
+	}
+	text := m.aiPanel.streamed.String()
+	if text == "" {
+		return
+	}
+	w := m.aiPanel.vp.Width
+	if w <= 10 {
+		w = 80
+	}
+	raw := wordwrap.String(text, w)
+	if wordIdx < 0 {
+		m.aiPanel.vp.SetContent(raw)
+		return
+	}
+	// Render each wrapped line with the highlighted word injected
+	wordCounter := 0
+	var sb strings.Builder
+	for i, line := range strings.Split(raw, "\n") {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(renderWords(line, &wordCounter, wordIdx, m.styles))
+	}
+	m.aiPanel.vp.SetContent(sb.String())
+}
+
+// toggleTTSPause pauses or resumes TTS playback and the word-advance ticker.
+func (m Model) toggleTTSPause() (Model, tea.Cmd) {
+	if m.tts == nil || !m.ttsSpeaking {
+		return m, nil
+	}
+	if m.ttsPaused {
+		m.tts.Resume()
+		m.ttsPaused = false
+		// Restart the word-advance ticker from the current position
+		return m, coretts.SyncedWordTickCmd(m.ttsDurations, m.ttsWordIndex+1)
+	}
+	m.tts.Pause()
+	m.ttsPaused = true
+	return m, nil
+}
+
+// wordIdxAtClick maps a terminal click position (inside the reader viewport)
+// to the nearest word index in m.ttsWords.  It simulates the same word-wrap
+// that setReaderContent uses so the mapping is exact for ASCII text.
+func (m *Model) wordIdxAtClick(clickX, clickY int) int {
+	const headerLines = 1 // renderHeader produces one line
+	vpLine := m.viewport.YOffset + (clickY - headerLines)
+	if vpLine < 0 {
+		vpLine = 0
+	}
+	w := m.width - 4
+	if w < 40 {
+		w = 40
+	}
+	lineIdx := 0
+	lineLen := 0
+	for i, word := range m.ttsWords {
+		wl := len(word)
+		if lineLen > 0 && lineLen+1+wl > w {
+			lineIdx++
+			lineLen = 0
+		}
+		if lineIdx > vpLine {
+			return i
+		}
+		if lineIdx == vpLine && lineLen+wl >= clickX {
+			return i
+		}
+		if lineLen > 0 {
+			lineLen++
+		}
+		lineLen += wl
+	}
+	return len(m.ttsWords) - 1
+}
+
+// jumpToWord stops the current TTS session and re-synthesises from wordIdx.
+func (m Model) jumpToWord(wordIdx int) (Model, tea.Cmd) {
+	if m.tts == nil || !m.tts.Available() || wordIdx < 0 || wordIdx >= len(m.ttsWords) {
+		return m, nil
+	}
+	m.tts.Stop()
+	m.ttsPaused = false
+	remainingWords := m.ttsWords[wordIdx:]
+	remainingText := strings.Join(remainingWords, " ")
+	if synced, err := m.tts.SpeakSynced(remainingText, remainingWords); err == nil {
+		m.ttsSpeaking = true
+		m.ttsWordIndex = wordIdx
+		m.ttsDurations = synced.WordDurations
+		if m.state == StateReader {
+			m.setReaderContent(wordIdx)
+		} else if m.state == StateAI {
+			m.setAIContent(wordIdx)
+		}
+		return m, coretts.WaitForTTSStart(synced.Started)
+	}
+	return m, nil
 }
 
 func (m Model) openSearch() (Model, tea.Cmd) {
@@ -1056,7 +1249,9 @@ func (m Model) renderHeader() string {
 	if m.tts != nil {
 		voice := m.tts.ActiveVoice()
 		label := shortVoiceLabel(voice)
-		if m.ttsSpeaking {
+		if m.ttsSpeaking && m.ttsPaused {
+			ttsStatus = m.styles.TTSOn.Render("  ⏸ " + label)
+		} else if m.ttsSpeaking {
 			ttsStatus = m.styles.TTSOn.Render("  🔊 " + label)
 		} else if m.tts.Available() {
 			ttsStatus = m.styles.TTSOff.Render("  🔇 " + label)
@@ -1085,7 +1280,13 @@ func (m Model) renderFooter() string {
 	case StateChapters:
 		hints = "↑↓ navigate  •  enter select  •  esc back  •  / search  •  q quit"
 	case StateReader:
-		hints = "↑↓ scroll  •  s speak  •  S stop  •  a AI  •  v voice  •  n/p ch  •  / search  •  esc back  •  q quit"
+		if m.ttsSpeaking && m.ttsPaused {
+			hints = "↑↓ scroll  •  space resume  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+		} else if m.ttsSpeaking {
+			hints = "↑↓ scroll  •  space pause  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+		} else {
+			hints = "↑↓ scroll  •  s speak  •  a AI  •  v voice  •  n/[ ch  •  / search  •  esc back  •  q quit"
+		}
 	case StateSearch:
 		hints = "↑↓ navigate  •  enter open  •  / new search  •  esc back  •  q quit"
 	case StateVoicePicker:

@@ -9,6 +9,7 @@ import (
 "strconv"
 "strings"
 "sync"
+"syscall"
 "time"
 )
 
@@ -25,6 +26,7 @@ mu        sync.Mutex
 cmd       *exec.Cmd
 playerCmd *exec.Cmd
 playing   bool
+paused    bool
 
 activeEngine string
 activeVoice  VoiceEntry
@@ -396,6 +398,34 @@ defer e.mu.Unlock()
 e.stopLocked()
 }
 
+// Pause suspends audio playback without stopping the current session.
+// The word-advance ticker must also be halted by the caller (set ttsPaused).
+func (e *Engine) Pause() {
+e.mu.Lock()
+defer e.mu.Unlock()
+if e.playing && !e.paused && e.playerCmd != nil && e.playerCmd.Process != nil {
+e.playerCmd.Process.Signal(syscall.SIGSTOP) //nolint:errcheck
+e.paused = true
+}
+}
+
+// Resume continues playback after a Pause.
+func (e *Engine) Resume() {
+e.mu.Lock()
+defer e.mu.Unlock()
+if e.paused && e.playerCmd != nil && e.playerCmd.Process != nil {
+e.playerCmd.Process.Signal(syscall.SIGCONT) //nolint:errcheck
+e.paused = false
+}
+}
+
+// IsPaused reports whether playback is currently suspended.
+func (e *Engine) IsPaused() bool {
+e.mu.Lock()
+defer e.mu.Unlock()
+return e.paused
+}
+
 func (e *Engine) stopLocked() {
 if e.playerCmd != nil && e.playerCmd.Process != nil {
 e.playerCmd.Process.Kill()
@@ -406,6 +436,7 @@ e.cmd.Process.Kill()
 }
 e.cmd = nil
 e.playing = false
+e.paused = false
 }
 
 // firstByteReader wraps an io.Reader and closes 'started' once the first byte is read.

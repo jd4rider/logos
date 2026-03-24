@@ -187,7 +187,7 @@ func (p *AIPanel) Hints() string {
 	case aiStreaming:
 		return "esc stop generation"
 	case aiResult:
-		return "enter save to library  •  e export PDF  •  esc back"
+		return "↑↓ scroll  •  s read aloud  •  space pause  •  S stop  •  enter save  •  e export PDF  •  esc back"
 	case aiSaving:
 		return "any key to continue"
 	}
@@ -301,6 +301,12 @@ func (p *AIPanel) handleResultKey(msg tea.KeyMsg) (*AIPanel, tea.Cmd) {
 		return p, p.saveToLibraryCmd()
 	case "e":
 		return p, p.exportPDFCmd()
+	case "s":
+		// Start TTS reading of the generated content
+		text := strings.TrimSpace(p.streamed.String())
+		if text != "" {
+			return p, func() tea.Msg { return aiReadAloudMsg{text: text} }
+		}
 	}
 	return p, nil
 }
