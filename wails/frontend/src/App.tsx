@@ -429,7 +429,7 @@ export default function App() {
     const chapter = comparisonChapters[slot];
     if (chapter) {
       const label = bibles.find((bible) => bible.id === comparisonBibleIds[slot])?.abbreviation ?? `Compare ${slot + 2}`;
-      return <Reader chapter={chapter} activeWordIndex={-1} readerLabel={label} compact />;
+      return <Reader chapter={chapter} activeWordIndex={-1} readerLabel={label} compact sharedScroll />;
     }
 
     return (
@@ -458,26 +458,29 @@ export default function App() {
     if (currentChapter) {
       if (parallelColumnCount > 1) {
         return (
-          <div className={`grid h-full min-h-0 gap-0 ${comparisonGridClass(parallelColumnCount)}`}>
-            <div className="min-h-0">
-              <Reader
-                chapter={currentChapter}
-                activeWordIndex={activeWordIndex}
-                readerLabel={currentBible?.abbreviation ?? 'Primary'}
-                compact
-                onVerseClick={(verseNumber) => {
-                  setVerseJumpTarget(verseNumber);
-                  setVerseJumpToken((value) => value + 1);
-                }}
-                onWordClick={(i) => wordClickRef.current?.(i)}
-              />
-            </div>
-
-            {Array.from({ length: parallelColumnCount - 1 }, (_, slot) => (
-              <div key={`comparison-pane-${slot}`} className="min-h-0">
-                {renderComparisonPane(slot)}
+          <div className="h-full overflow-y-auto">
+            <div className={`grid min-h-full items-start gap-0 ${comparisonGridClass(parallelColumnCount)}`}>
+              <div className="min-h-0">
+                <Reader
+                  chapter={currentChapter}
+                  activeWordIndex={activeWordIndex}
+                  readerLabel={currentBible?.abbreviation ?? 'Primary'}
+                  compact
+                  sharedScroll
+                  onVerseClick={(verseNumber) => {
+                    setVerseJumpTarget(verseNumber);
+                    setVerseJumpToken((value) => value + 1);
+                  }}
+                  onWordClick={(i) => wordClickRef.current?.(i)}
+                />
               </div>
-            ))}
+
+              {Array.from({ length: parallelColumnCount - 1 }, (_, slot) => (
+                <div key={`comparison-pane-${slot}`} className="min-h-0">
+                  {renderComparisonPane(slot)}
+                </div>
+              ))}
+            </div>
           </div>
         );
       }

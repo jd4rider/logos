@@ -6,6 +6,7 @@ interface Props {
   activeWordIndex: number;
   readerLabel?: string;
   compact?: boolean;
+  sharedScroll?: boolean;
   onVerseClick?: (verseNumber: string) => void;
   onWordClick?: (wordIndex: number) => void;
 }
@@ -127,11 +128,16 @@ export default function Reader({
   activeWordIndex,
   readerLabel,
   compact = false,
+  sharedScroll = false,
   onVerseClick,
   onWordClick,
 }: Props) {
   return (
-    <div className={`mx-auto flex h-full w-full flex-col overflow-y-auto ${compact ? 'px-4 py-4' : 'max-w-4xl px-7 py-8'}`}>
+    <div
+      className={`mx-auto flex w-full flex-col ${sharedScroll ? 'min-h-full' : 'h-full overflow-y-auto'} ${
+        compact ? 'px-4 py-4' : 'max-w-4xl px-7 py-8'
+      }`}
+    >
       <div className={`rounded-[2rem] border border-border/80 bg-surface/70 shadow-panel backdrop-blur-xl ${compact ? 'mb-4 p-5' : 'mb-6 p-6'}`}>
         <div className="mb-3 flex flex-wrap items-center gap-3">
           {readerLabel && (
