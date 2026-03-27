@@ -80,7 +80,15 @@ jobs:
 
       - name: Rename installer
         shell: bash
-        run: mv wails/bin/logos-ai-amd64-installer.exe wails/bin/logos-ai-windows-amd64-installer.exe
+        run: |
+          shopt -s nullglob
+          installers=(wails/bin/*-amd64-installer.exe)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            printf 'Expected exactly one Windows installer, found %s\n' "${#installers[@]}" >&2
+            ls -la wails/bin >&2 || true
+            exit 1
+          fi
+          mv "${installers[0]}" wails/bin/logos-ai-windows-amd64-installer.exe
 
       - name: Create Windows bundle archive
         shell: pwsh
