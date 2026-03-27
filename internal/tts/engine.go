@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -406,8 +405,9 @@ func (e *Engine) Pause() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.playing && !e.paused && e.playerCmd != nil && e.playerCmd.Process != nil {
-		e.playerCmd.Process.Signal(syscall.SIGSTOP) //nolint:errcheck
-		e.paused = true
+		if err := pausePlaybackProcess(e.playerCmd.Process); err == nil {
+			e.paused = true
+		}
 	}
 }
 
@@ -416,8 +416,9 @@ func (e *Engine) Resume() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.paused && e.playerCmd != nil && e.playerCmd.Process != nil {
-		e.playerCmd.Process.Signal(syscall.SIGCONT) //nolint:errcheck
-		e.paused = false
+		if err := resumePlaybackProcess(e.playerCmd.Process); err == nil {
+			e.paused = false
+		}
 	}
 }
 
