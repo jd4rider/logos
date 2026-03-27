@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Events } from '@wailsio/runtime';
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 import { LogosService } from '../bindings';
 import { findVerseForWordIndex, parseVerseSpeechSegments } from '../chapterSpeech';
 import type { ChapterContent, SpeechSettings, VoiceOption } from '../types';
@@ -67,6 +68,10 @@ function engineLabel(engine: string) {
   }
 }
 
+function isFallbackEngine(engine?: string | null) {
+  return engine === 'windows' || engine === 'espeak' || engine === 'speechd' || engine === 'say';
+}
+
 export default function TTSBar({
   chapter,
   activeWordIndex,
@@ -95,6 +100,8 @@ export default function TTSBar({
   const pauseStartRef = useRef(0);
   const voiceGroups = groupVoices(settings?.voices ?? []);
   const verseSegments = parseVerseSpeechSegments(chapter.content);
+  const activeEngine = settings?.activeVoice?.engine ?? settings?.engine ?? '';
+  const usingFallbackEngine = isFallbackEngine(activeEngine);
 
   const isActive = synthesizing || speaking || paused;
 
@@ -359,11 +366,14 @@ export default function TTSBar({
         <h3 className="font-display text-2xl text-text">Shared Engine</h3>
       </div>
 
-      <div className="mb-4 rounded-[1.35rem] border border-border bg-bg/45 px-4 py-3">
-        <div className="mb-1 text-xs uppercase tracking-[0.22em] text-muted">Active backend</div>
-        <div className="text-sm text-text">
-          {settings?.available ? settings.activeVoice?.label ?? settings.engine : 'Unavailable'}
-        </div>
+        <div className="mb-4 rounded-[1.35rem] border border-border bg-bg/45 px-4 py-3">
+          <div className="mb-1 text-xs uppercase tracking-[0.22em] text-muted">Active backend</div>
+          <div className="text-sm text-text">
+            {settings?.available ? settings.activeVoice?.label ?? settings.engine : 'Unavailable'}
+          </div>
+          <div className="mt-2 text-xs leading-6 text-muted">
+            Best quality: <span className="text-gold">Kokoro</span>. Solid local alternative: <span className="text-text">Piper</span>.
+          </div>
         {voiceGroups.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {voiceGroups.map((group) => (
@@ -377,6 +387,23 @@ export default function TTSBar({
           </div>
         )}
       </div>
+
+      {usingFallbackEngine && (
+        <div className="mb-4 rounded-[1.35rem] border border-gold/30 bg-gold/10 px-4 py-3">
+          <div className="text-xs uppercase tracking-[0.22em] text-gold">Voice Quality Tip</div>
+          <p className="mt-2 text-sm leading-7 text-text">
+            You are using a built-in fallback voice. It works, but Kokoro usually sounds much better for longer Bible
+            reading and Piper is the next best local option.
+          </p>
+          <button
+            type="button"
+            onClick={() => BrowserOpenURL('https://docs.logos-ai.online/setup/voices/')}
+            className="mt-4 rounded-2xl border border-gold/40 bg-bg/50 px-4 py-2 text-sm text-gold transition hover:bg-gold/10"
+          >
+            Open Kokoro and Piper setup
+          </button>
+        </div>
+      )}
 
       <div className="space-y-4">
         <label className="block">
@@ -477,6 +504,13 @@ export default function TTSBar({
         <div className="rounded-[1.35rem] border border-border bg-bg/35 px-4 py-3 text-sm text-muted">
           This uses the same shared speech stack as the CLI and TUI: Kokoro and Piper first, then macOS `say`,
           Windows speech, or Linux fallback voices when the neural engines are not installed.
+          <button
+            type="button"
+            onClick={() => BrowserOpenURL('https://docs.logos-ai.online/setup/voices/')}
+            className="mt-4 inline-flex rounded-2xl border border-border bg-surface/60 px-4 py-2 text-sm text-text transition hover:border-gold/50 hover:text-gold"
+          >
+            Voice setup docs
+          </button>
         </div>
       </div>
     </section>

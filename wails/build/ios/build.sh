@@ -2,10 +2,10 @@
 set -e
 
 # Build configuration
-APP_NAME="logosref"
-BUNDLE_ID="com.example.logosref"
-VERSION="0.1.0"
-BUILD_NUMBER="0.1.0"
+APP_NAME="logos-ai"
+BUNDLE_ID="com.jd4rider.logosai"
+VERSION="0.1.5"
+BUILD_NUMBER="0.1.5"
 BUILD_DIR="build/ios"
 TARGET="simulator"
 

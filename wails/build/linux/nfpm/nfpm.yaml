@@ -6,21 +6,19 @@
 name: "logos-ai"
 arch: ${GOARCH}
 platform: "linux"
-version: ${VERSION}
+version: "0.1.5"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "Logos AI desktop Bible reader with an installed Logos CLI."
+description: "AI-assisted Bible reader menubar app"
 vendor: "JD4Rider"
-homepage: "https://logos-ai.online"
+homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
   - src: "./bin/logos-ai"
-    dst: "/opt/logos-ai/logos-ai"
-  - src: "./bin/logos"
-    dst: "/usr/local/bin/logos"
+    dst: "/usr/local/bin/logos-ai"
   - src: "./build/appicon.png"
     dst: "/usr/share/icons/hicolor/128x128/apps/logos-ai.png"
   - src: "./build/linux/logos-ai.desktop"
