@@ -8,7 +8,7 @@ VERSION="${VERSION:-0.0.0-dev}"
 APP_BUNDLE_NAME="${APP_BUNDLE_NAME:-Logos AI.app}"
 PKG_IDENTIFIER="${PKG_IDENTIFIER:-online.logos-ai.installer}"
 PKG_OUTPUT="${PKG_OUTPUT:-$BIN_DIR/logos-ai-macos-universal.pkg}"
-APP_INSTALL_DIR="${APP_INSTALL_DIR:-/usr/local/share/logos-ai}"
+APP_INSTALL_DIR="${APP_INSTALL_DIR:-/Applications}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This script must run on macOS." >&2

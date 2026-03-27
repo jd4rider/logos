@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO="${REPO:-jd4rider/logos}"
 INSTALL_DIR="${LOGOS_INSTALL_DIR:-$HOME/.local/bin}"
-APP_DIR="${LOGOS_APP_DIR:-$HOME/.local/share/logos-ai}"
+APP_DIR="${LOGOS_APP_DIR:-$HOME/Applications}"
 
 info() { printf '[logos] %s\n' "$*"; }
 fail() { printf '[logos] %s\n' "$*" >&2; exit 1; }
