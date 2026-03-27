@@ -132,6 +132,12 @@ func (i voiceItem) Description() string {
 		return "Kokoro TTS — natural neural"
 	case "say":
 		return "macOS built-in"
+	case "windows":
+		return "Windows built-in speech"
+	case "espeak":
+		return "Linux fallback speech"
+	case "speechd":
+		return "Speech Dispatcher fallback"
 	}
 	return ""
 }
@@ -246,7 +252,7 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 		// Build a merged, alphabetically-sorted list.
 		// Local (offline) entries win over API entries with the same abbreviation
 		// so that licensed translations that require a higher API tier don't 403.
-		seenID   := map[string]bool{}
+		seenID := map[string]bool{}
 		seenAbbr := map[string]bool{} // normalised abbreviation dedup
 		var items []bibleItem
 
@@ -268,7 +274,7 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 						},
 						offline: true,
 					})
-					seenID[t.ID]     = true
+					seenID[t.ID] = true
 					seenAbbr[normAbbr] = true
 				}
 			}
@@ -286,7 +292,7 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 					continue
 				}
 				items = append(items, bibleItem{b: b, offline: false})
-				seenID[b.ID]     = true
+				seenID[b.ID] = true
 				seenAbbr[normAbbr] = true
 			}
 		}
@@ -298,10 +304,10 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 			return ai < aj
 		})
 
-		bibles      := make([]api.Bible, len(items))
+		bibles := make([]api.Bible, len(items))
 		offlineFlags := make([]bool, len(items))
 		for i, it := range items {
-			bibles[i]      = it.b
+			bibles[i] = it.b
 			offlineFlags[i] = it.offline
 		}
 
@@ -1555,25 +1561,25 @@ func displayLanguageName(code string) string {
 	m := map[string]string{
 		"eng": "English", "en": "English",
 		"spa": "Spanish", "es": "Spanish", "esp": "Spanish",
-		"fra": "French",  "fr": "French",
-		"deu": "German",  "ger": "German", "de": "German",
+		"fra": "French", "fr": "French",
+		"deu": "German", "ger": "German", "de": "German",
 		"ita": "Italian", "it": "Italian",
 		"por": "Portuguese", "pt": "Portuguese",
-		"nld": "Dutch",   "nl": "Dutch",
-		"pol": "Polish",  "pl": "Polish",
+		"nld": "Dutch", "nl": "Dutch",
+		"pol": "Polish", "pl": "Polish",
 		"rus": "Russian", "ru": "Russian",
 		"zho": "Chinese", "zh": "Chinese",
-		"hin": "Hindi",   "hi": "Hindi",
-		"ara": "Arabic",  "ar": "Arabic",
-		"kor": "Korean",  "ko": "Korean",
-		"jpn": "Japanese","ja": "Japanese",
-		"vie": "Vietnamese","vi": "Vietnamese",
-		"ind": "Indonesian","id": "Indonesian",
+		"hin": "Hindi", "hi": "Hindi",
+		"ara": "Arabic", "ar": "Arabic",
+		"kor": "Korean", "ko": "Korean",
+		"jpn": "Japanese", "ja": "Japanese",
+		"vie": "Vietnamese", "vi": "Vietnamese",
+		"ind": "Indonesian", "id": "Indonesian",
 		"tur": "Turkish", "tr": "Turkish",
 		"swa": "Swahili", "sw": "Swahili",
-		"urd": "Urdu",    "ur": "Urdu",
+		"urd": "Urdu", "ur": "Urdu",
 		"ben": "Bengali", "bn": "Bengali",
-		"tam": "Tamil",   "ta": "Tamil",
+		"tam": "Tamil", "ta": "Tamil",
 		"afr": "Afrikaans",
 		"lat": "Latin",
 		"grc": "Greek (Ancient)",
@@ -1599,7 +1605,7 @@ func formatLocalReference(verseID string) string {
 // "Say: Samantha"              → "Say·Samantha"
 func shortVoiceLabel(v coretts.VoiceEntry) string {
 	if v.Name == "" {
-		return v.Engine
+		return ttsDisplayName(v.Engine)
 	}
 	// Strip engine prefix ("Piper: ", "Kokoro: ", "Say: ")
 	name := v.Name
@@ -1619,6 +1625,17 @@ func shortVoiceLabel(v coretts.VoiceEntry) string {
 			name = name[:idx]
 		}
 	}
-	engine := strings.Title(v.Engine)
+	engine := ttsDisplayName(v.Engine)
 	return engine + "·" + name
+}
+
+func ttsDisplayName(engine string) string {
+	switch engine {
+	case "speechd":
+		return "Speech Dispatcher"
+	case "espeak":
+		return "eSpeak"
+	default:
+		return strings.Title(engine) //nolint:staticcheck
+	}
 }

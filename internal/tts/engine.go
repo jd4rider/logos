@@ -17,7 +17,7 @@ import (
 type VoiceEntry struct {
 	Name   string `json:"name"`   // display name shown in picker
 	ID     string `json:"id"`     // engine-specific identifier (model path, voice id, etc.)
-	Engine string `json:"engine"` // "piper" | "kokoro" | "say"
+	Engine string `json:"engine"` // "piper" | "kokoro" | "say" | "windows" | "espeak" | "speechd"
 }
 
 // Engine auto-detects available TTS backends and speaks text asynchronously.
@@ -120,6 +120,7 @@ func (e *Engine) ListVoices() []VoiceEntry {
 	voices = append(voices, e.listPiperVoices()...)
 	voices = append(voices, e.listKokoroVoices()...)
 	voices = append(voices, e.listSayVoices()...)
+	voices = append(voices, e.listBasicVoices()...)
 	return voices
 }
 
@@ -267,8 +268,8 @@ func (e *Engine) Speak(text string) (<-chan struct{}, error) {
 		err = e.speakPiper(text, started)
 	case "kokoro":
 		err = e.speakKokoro(text, started)
-	case "say":
-		err = e.speakSay(text, started)
+	case "say", "windows", "espeak", "speechd":
+		err = e.speakBasic(text, started)
 	default:
 		close(started)
 		return started, fmt.Errorf("no TTS engine available")
@@ -367,30 +368,7 @@ func (e *Engine) speakKokoro(text string, started chan struct{}) error {
 }
 
 func (e *Engine) speakSay(text string, started chan struct{}) error {
-	args := []string{"-r", strconv.Itoa(e.rate)}
-	if e.activeVoice.ID != "" {
-		args = append(args, "-v", e.activeVoice.ID)
-	}
-	args = append(args, text)
-	cmd := exec.Command("say", args...)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	e.cmd = cmd
-	e.playing = true
-	// say starts immediately — signal after a short buffer
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		close(started)
-	}()
-	go func() {
-		cmd.Wait()
-		e.mu.Lock()
-		e.playing = false
-		e.cmd = nil
-		e.mu.Unlock()
-	}()
-	return nil
+	return e.speakBasic(text, started)
 }
 
 func (e *Engine) Stop() {
@@ -468,7 +446,7 @@ type SyncedSpeech struct {
 // then plays it back while returning per-word durations that are scaled to the
 // real audio length. This gives accurate word-highlight synchronisation.
 //
-// For say/kokoro it falls back to estimated durations (no pre-synthesis needed).
+// For direct system engines it falls back to estimated durations (no pre-synthesis needed).
 func (e *Engine) SpeakSynced(text string, words []string) (*SyncedSpeech, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -493,9 +471,8 @@ func (e *Engine) SpeakSynced(text string, words []string) (*SyncedSpeech, error)
 		}
 		return &SyncedSpeech{WordDurations: durations, Started: started}, nil
 
-	case "say":
-		// say can't be pre-synthesized easily; use estimated durations
-		err := e.speakSay(text, started)
+	case "say", "windows", "espeak", "speechd":
+		err := e.speakBasic(text, started)
 		if err != nil {
 			close(started)
 			return nil, err
@@ -711,12 +688,12 @@ func (e *Engine) getSentencePCM(s Sentence) ([]byte, string, []time.Duration, er
 		return e.getSentencePCMPiper(s, voiceID, voiceName, rate, piperModel)
 	case "kokoro":
 		return e.getSentencePCMKokoro(s, voiceID, voiceName, rate)
-	case "say":
+	case "say", "windows", "espeak", "speechd":
 		durations := make([]time.Duration, len(s.Words))
 		for i, w := range s.Words {
 			durations[i] = estimateWordDuration(w)
 		}
-		return nil, "say", durations, nil
+		return nil, eng, durations, nil
 	default:
 		return nil, "", nil, fmt.Errorf("no TTS engine available")
 	}
@@ -841,24 +818,9 @@ func (e *Engine) PlayChunked(sentences []Sentence, startWordOffset int, onChunk 
 			highlightOffset = startWordOffset
 		}
 
-		if sampleRate == "say" {
+		if isEstimatedDurationEngine(sampleRate) {
 			onChunk(highlightOffset, durations)
-			e.mu.Lock()
-			args := []string{"-r", fmt.Sprintf("%d", e.rate)}
-			if e.activeVoice.ID != "" {
-				args = append(args, "-v", e.activeVoice.ID)
-			}
-			args = append(args, s.Text)
-			cmd := exec.Command("say", args...)
-			e.cmd = cmd
-			e.mu.Unlock()
-			cmd.Start() //nolint:errcheck
-			cmd.Wait()  //nolint:errcheck
-			e.mu.Lock()
-			curGen2 := e.generation
-			e.cmd = nil
-			e.mu.Unlock()
-			if curGen2 != gen {
+			if err := e.runEstimatedChunk(s.Text, gen); err != nil {
 				return nil
 			}
 		} else {
@@ -887,7 +849,7 @@ func (e *Engine) PrecacheSentences(cleanedText string) error {
 		e.mu.Lock()
 		eng := e.activeEngine
 		e.mu.Unlock()
-		if eng == "say" || eng == "" {
+		if eng == "" || isEstimatedDurationEngine(eng) {
 			return nil
 		}
 		_, _, _, err := e.getSentencePCM(s)
@@ -932,7 +894,8 @@ func (e *Engine) SpeakSyncedFrom(text string, words []string, startWord int) (sy
 		cacheKey = CacheKey("kokoro", voiceID, rate, text)
 		sampleRate = 24000
 	default:
-		// say or unknown: no PCM cache, fall back to full synthesis from start.
+		// Direct system engines do not expose cached PCM, so fall back to
+		// synthesis from the beginning.
 		s, err := e.SpeakSynced(text, words)
 		return s, 0, err
 	}
@@ -994,8 +957,8 @@ func (e *Engine) Precache(text string, words []string) error {
 	kokoroVoices := e.kokoroVoices
 	e.mu.Unlock()
 
-	if eng == "none" || eng == "" || eng == "say" {
-		// 'say' can't be pre-synthesised; skip.
+	if eng == "none" || eng == "" || isEstimatedDurationEngine(eng) {
+		// Direct system engines can't be pre-synthesised; skip.
 		return nil
 	}
 

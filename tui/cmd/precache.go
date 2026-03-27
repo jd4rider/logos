@@ -53,7 +53,10 @@ Use 'logos bibles' to list available offline translation IDs.`,
 		piperModel := os.Getenv("PIPER_MODEL")
 		engine := tts.New(piperModel)
 		if !engine.Available() {
-			return fmt.Errorf("no TTS engine available — install Piper or Kokoro first")
+			return fmt.Errorf("no TTS engine available — install Kokoro or Piper first")
+		}
+		if engine.EngineName() != "piper" && engine.EngineName() != "kokoro" {
+			return fmt.Errorf("precache requires Piper or Kokoro; system fallback voices do not support cached synthesis")
 		}
 
 		fmt.Printf("Pre-caching TTS audio for: %s (%s)\n", transName, translationID)

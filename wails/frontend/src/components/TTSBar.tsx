@@ -24,7 +24,7 @@ function explainError(error: unknown): string {
 }
 
 function groupVoices(voices: VoiceOption[]) {
-  const order = ['piper', 'kokoro', 'say'];
+  const order = ['piper', 'kokoro', 'say', 'windows', 'espeak', 'speechd'];
   const buckets: Record<string, VoiceOption[]> = {};
 
   voices.forEach((voice) => {
@@ -53,10 +53,18 @@ function groupVoices(voices: VoiceOption[]) {
 }
 
 function engineLabel(engine: string) {
-  if (!engine) {
-    return 'Unknown';
+  switch (engine) {
+    case 'speechd':
+      return 'Speech Dispatcher';
+    case 'espeak':
+      return 'eSpeak';
+    case 'windows':
+      return 'Windows';
+    case 'say':
+      return 'macOS Say';
+    default:
+      return engine ? engine.charAt(0).toUpperCase() + engine.slice(1) : 'Unknown';
   }
-  return engine.charAt(0).toUpperCase() + engine.slice(1);
 }
 
 export default function TTSBar({
@@ -260,7 +268,7 @@ export default function TTSBar({
 
   async function handleSpeak() {
     if (!settings?.available) {
-      onError('No supported speech engine is available. Install Piper, Kokoro, or macOS say.');
+      onError('No supported speech engine is available. Install Kokoro or Piper, or use Windows speech / Linux eSpeak / macOS say.');
       return;
     }
     await startSpeechFromWord(0);
@@ -467,11 +475,10 @@ export default function TTSBar({
         </div>
 
         <div className="rounded-[1.35rem] border border-border bg-bg/35 px-4 py-3 text-sm text-muted">
-          This uses the same Piper, Kokoro, or macOS `say` backend stack the CLI/TUI uses, including synced
-          read-along timing.
+          This uses the same shared speech stack as the CLI and TUI: Kokoro and Piper first, then macOS `say`,
+          Windows speech, or Linux fallback voices when the neural engines are not installed.
         </div>
       </div>
     </section>
   );
 }
-

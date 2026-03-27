@@ -427,7 +427,8 @@ export default function App() {
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-muted">
               Browse imported local translations, fall back to API.Bible when needed, search passages quickly, and read
-              them aloud through the shared Piper or Kokoro pipeline.
+              them aloud through the shared Logos speech stack with neural voices first and system fallbacks when
+              needed.
             </p>
           </section>
 
@@ -704,7 +705,8 @@ export default function App() {
                     <p className="mb-3 text-xs uppercase tracking-[0.24em] text-muted">Speech</p>
                     <h3 className="font-display text-2xl text-text">Ready</h3>
                     <p className="mt-4 text-sm leading-7 text-muted">
-                      Open a chapter to read it aloud using the shared Piper or Kokoro speech engine.
+                      Open a chapter to read it aloud using the shared speech engine, with Kokoro and Piper first and
+                      native system fallback voices after that.
                     </p>
                   </section>
                 )}

@@ -563,7 +563,7 @@ func formatLocalReference(verseID string) string {
 
 func shortVoiceLabel(voice tts.VoiceEntry) string {
 	if voice.Name == "" {
-		return strings.Title(voice.Engine) //nolint:staticcheck
+		return ttsDisplayName(voice.Engine)
 	}
 	name := voice.Name
 	if idx := strings.Index(name, ": "); idx >= 0 {
@@ -580,7 +580,18 @@ func shortVoiceLabel(voice tts.VoiceEntry) string {
 			name = name[:idx]
 		}
 	}
-	return strings.Title(voice.Engine) + " · " + name //nolint:staticcheck
+	return ttsDisplayName(voice.Engine) + " · " + name
+}
+
+func ttsDisplayName(engine string) string {
+	switch engine {
+	case "speechd":
+		return "Speech Dispatcher"
+	case "espeak":
+		return "eSpeak"
+	default:
+		return strings.Title(engine) //nolint:staticcheck
+	}
 }
 
 // ── TTS extras ──────────────────────────────────────────────────────────────

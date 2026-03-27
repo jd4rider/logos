@@ -243,7 +243,8 @@ func SyncedWordTickCmd(durations []time.Duration, idx int, gen int) tea.Cmd {
 	})
 }
 
-// WordTickCmd is the fallback estimator (used for say/kokoro when no pre-synthesis).
+// WordTickCmd is the fallback estimator for direct system voices when no
+// pre-synthesized timing data is available.
 func WordTickCmd(words []string, idx int, gen int) tea.Cmd {
 	if idx <= 0 || idx > len(words) {
 		return nil
