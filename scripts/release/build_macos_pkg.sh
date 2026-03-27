@@ -8,6 +8,7 @@ VERSION="${VERSION:-0.0.0-dev}"
 APP_BUNDLE_NAME="${APP_BUNDLE_NAME:-Logos AI.app}"
 PKG_IDENTIFIER="${PKG_IDENTIFIER:-online.logos-ai.installer}"
 PKG_OUTPUT="${PKG_OUTPUT:-$BIN_DIR/logos-ai-macos-universal.pkg}"
+APP_INSTALL_DIR="${APP_INSTALL_DIR:-/usr/local/share/logos-ai}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This script must run on macOS." >&2
@@ -28,11 +29,16 @@ rm -f "$BIN_DIR/logos-amd64" "$BIN_DIR/logos-arm64"
 
 PKG_ROOT="$BIN_DIR/pkgroot"
 rm -rf "$PKG_ROOT"
-mkdir -p "$PKG_ROOT/Applications" "$PKG_ROOT/usr/local/bin"
+mkdir -p "$PKG_ROOT$APP_INSTALL_DIR" "$PKG_ROOT/usr/local/bin"
 
-cp -R "$BIN_DIR/logos-ai.app" "$PKG_ROOT/Applications/$APP_BUNDLE_NAME"
+cp -R "$BIN_DIR/logos-ai.app" "$PKG_ROOT$APP_INSTALL_DIR/$APP_BUNDLE_NAME"
 cp "$BIN_DIR/logos" "$PKG_ROOT/usr/local/bin/logos"
 chmod 755 "$PKG_ROOT/usr/local/bin/logos"
+cat >"$PKG_ROOT/usr/local/bin/logos-ai" <<EOF
+#!/usr/bin/env bash
+exec open "$APP_INSTALL_DIR/$APP_BUNDLE_NAME" --args "\$@"
+EOF
+chmod 755 "$PKG_ROOT/usr/local/bin/logos-ai"
 
 pkgbuild \
   --root "$PKG_ROOT" \

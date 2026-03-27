@@ -4,7 +4,7 @@ The release goal is to install the Wails desktop app and the CLI together.
 
 ## Native installer strategy
 
-- macOS: signed `.pkg` installs `Logos AI.app` into `/Applications` and `logos` into `/usr/local/bin`
+- macOS: signed `.pkg` installs `Logos AI.app` into `/usr/local/share/logos-ai/`, installs a `logos-ai` launcher into `/usr/local/bin`, and installs `logos` into `/usr/local/bin`
 - Windows: NSIS `.exe` installs `logos-ai.exe` and `logos.exe` into the same install directory
 - Linux: `.deb` installs the GUI to `/opt/logos-ai/logos-ai` and the CLI to `/usr/local/bin/logos`
 
@@ -13,6 +13,7 @@ The release goal is to install the Wails desktop app and the CLI together.
 - Homebrew cask installs the app and the bundled top-level CLI from the same macOS archive
 - Scoop installs the GUI app and the CLI from the same Windows bundle archive
 - `scripts/install.sh` installs the macOS or Linux bundle for users who still want a shell installer
+  On macOS, the shell install now places the app bundle under `~/.local/share/logos-ai/logos-ai.app` by default instead of copying it into `Applications`.
 
 ## Release-day manifest update
 

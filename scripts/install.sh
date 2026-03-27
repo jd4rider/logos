@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="${REPO:-jd4rider/logos}"
 INSTALL_DIR="${LOGOS_INSTALL_DIR:-$HOME/.local/bin}"
+APP_DIR="${LOGOS_APP_DIR:-$HOME/.local/share/logos-ai}"
 
 info() { printf '[logos] %s\n' "$*"; }
 fail() { printf '[logos] %s\n' "$*" >&2; exit 1; }
@@ -53,17 +54,23 @@ main() {
   mkdir -p "$INSTALL_DIR"
 
   if [[ "$os" == "darwin" ]]; then
-    mkdir -p "$HOME/Applications"
-    rm -rf "$HOME/Applications/logos-ai.app"
-    cp -R "$tmpdir/logos-ai.app" "$HOME/Applications/logos-ai.app"
+    mkdir -p "$APP_DIR"
+    rm -rf "$APP_DIR/logos-ai.app"
+    cp -R "$tmpdir/logos-ai.app" "$APP_DIR/logos-ai.app"
     if [[ -f "$tmpdir/logos" ]]; then
       install -m 0755 "$tmpdir/logos" "$INSTALL_DIR/logos"
-    elif [[ -f "$tmpdir/logos-ai.app/Contents/Resources/logos" ]]; then
-      install -m 0755 "$tmpdir/logos-ai.app/Contents/Resources/logos" "$INSTALL_DIR/logos"
+    elif [[ -f "$APP_DIR/logos-ai.app/Contents/Resources/logos" ]]; then
+      install -m 0755 "$APP_DIR/logos-ai.app/Contents/Resources/logos" "$INSTALL_DIR/logos"
     else
       fail "Bundled CLI was not found in the macOS archive."
     fi
-    info "Installed app to $HOME/Applications/logos-ai.app"
+    cat >"$INSTALL_DIR/logos-ai" <<EOF
+#!/usr/bin/env bash
+exec open "$APP_DIR/logos-ai.app" --args "\$@"
+EOF
+    chmod 0755 "$INSTALL_DIR/logos-ai"
+    info "Installed app to $APP_DIR/logos-ai.app"
+    info "Launcher installed to $INSTALL_DIR/logos-ai"
   else
     install -m 0755 "$tmpdir/logos-ai" "$INSTALL_DIR/logos-ai"
     install -m 0755 "$tmpdir/logos" "$INSTALL_DIR/logos"
