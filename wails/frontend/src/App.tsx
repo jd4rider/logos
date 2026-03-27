@@ -11,6 +11,8 @@ import { languageLabel, languageOptions } from './lib/languages';
 
 const dragRegion = { WebkitAppRegion: 'drag' } as unknown as CSSProperties;
 const noDragRegion = { WebkitAppRegion: 'no-drag' } as unknown as CSSProperties;
+const maxParallelColumns = 3;
+const comparisonSlotCount = maxParallelColumns - 1;
 
 function explainError(error: unknown): string {
   if (error instanceof Error) {
@@ -45,6 +47,41 @@ function matchesBook(candidate: Book, target: Book) {
   return targetKeys.some((key) => candidateKeys.includes(key));
 }
 
+function sameSelections(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function normalizeComparisonSelections(primaryBibleId: string | undefined, bibles: BibleSummary[], current: string[]) {
+  const available = bibles.filter((bible) => bible.id !== primaryBibleId);
+  const used = new Set<string>();
+
+  return Array.from({ length: comparisonSlotCount }, (_, slot) => {
+    const preserved = current[slot];
+    if (preserved && available.some((bible) => bible.id === preserved) && !used.has(preserved)) {
+      used.add(preserved);
+      return preserved;
+    }
+
+    const fallback = available.find((bible) => !used.has(bible.id));
+    if (!fallback) {
+      return '';
+    }
+
+    used.add(fallback.id);
+    return fallback.id;
+  });
+}
+
+function comparisonGridClass(columnCount: number) {
+  if (columnCount <= 1) {
+    return '';
+  }
+  if (columnCount === 2) {
+    return 'xl:grid-cols-2';
+  }
+  return 'xl:grid-cols-2 2xl:grid-cols-3';
+}
+
 export default function App() {
   const [assistantPane, setAssistantPane] = useState<'chat' | 'tools' | null>(null);
   const [bibles, setBibles] = useState<BibleSummary[]>([]);
@@ -62,11 +99,11 @@ export default function App() {
   const [activeWordIndex, setActiveWordIndex] = useState(-1);
   const [verseJumpTarget, setVerseJumpTarget] = useState<string | null>(null);
   const [verseJumpToken, setVerseJumpToken] = useState(0);
-  const [parallelOpen, setParallelOpen] = useState(false);
-  const [parallelBibleId, setParallelBibleId] = useState('');
-  const [parallelChapter, setParallelChapter] = useState<ChapterContent | null>(null);
-  const [parallelBusy, setParallelBusy] = useState(false);
-  const [parallelError, setParallelError] = useState<string | null>(null);
+  const [parallelColumnCount, setParallelColumnCount] = useState(1);
+  const [comparisonBibleIds, setComparisonBibleIds] = useState<string[]>(['', '']);
+  const [comparisonChapters, setComparisonChapters] = useState<(ChapterContent | null)[]>([null, null]);
+  const [comparisonBusy, setComparisonBusy] = useState<boolean[]>([false, false]);
+  const [comparisonErrors, setComparisonErrors] = useState<(string | null)[]>([null, null]);
   const wordClickRef = useRef<((i: number) => void) | undefined>(undefined);
   const comparisonBooksRef = useRef<Record<string, Book[]>>({});
   const comparisonChaptersRef = useRef<Record<string, Chapter[]>>({});
@@ -84,9 +121,9 @@ export default function App() {
         setSearchOpen(false);
         setBooks([]);
         setChapters([]);
-        setParallelChapter(null);
-        setParallelError(null);
-        setParallelOpen(false);
+        setComparisonChapters([null, null]);
+        setComparisonBusy([false, false]);
+        setComparisonErrors([null, null]);
       }
     } catch (loadError) {
       setError(explainError(loadError));
@@ -100,20 +137,16 @@ export default function App() {
   }, [selectedLanguage]);
 
   useEffect(() => {
-    if (!currentBible) {
-      setParallelBibleId('');
-      setParallelChapter(null);
-      setParallelOpen(false);
-      return;
-    }
+    const maxColumns = Math.min(maxParallelColumns, Math.max(1, bibles.length));
+    setParallelColumnCount((current) => Math.min(current, maxColumns));
+  }, [bibles.length]);
 
-    if (parallelBibleId && parallelBibleId !== currentBible.id) {
-      return;
-    }
-
-    const fallback = bibles.find((bible) => bible.id !== currentBible.id);
-    setParallelBibleId(fallback?.id ?? '');
-  }, [bibles, currentBible?.id, parallelBibleId]);
+  useEffect(() => {
+    setComparisonBibleIds((current) => {
+      const next = normalizeComparisonSelections(currentBible?.id, bibles, current);
+      return sameSelections(current, next) ? current : next;
+    });
+  }, [bibles, currentBible?.id]);
 
   async function selectBible(bible: BibleSummary) {
     setCurrentBible(bible);
@@ -125,8 +158,9 @@ export default function App() {
     setSearchOpen(false);
     setBooks([]);
     setChapters([]);
-    setParallelChapter(null);
-    setParallelError(null);
+    setComparisonChapters([null, null]);
+    setComparisonBusy([false, false]);
+    setComparisonErrors([null, null]);
     setBusyLabel(`Loading ${bible.abbreviation}`);
 
     try {
@@ -143,6 +177,29 @@ export default function App() {
     setSelectedLanguage(language);
   }
 
+  function handleParallelColumnChange(columnCount: number) {
+    const maxColumns = Math.min(maxParallelColumns, Math.max(1, bibles.length));
+    setParallelColumnCount(Math.max(1, Math.min(columnCount, maxColumns)));
+  }
+
+  function setComparisonBibleId(slot: number, bibleId: string) {
+    setComparisonBibleIds((current) => current.map((value, index) => (index === slot ? bibleId : value)));
+  }
+
+  function comparisonOptions(slot: number) {
+    const blocked = new Set<string>();
+    if (currentBible?.id) {
+      blocked.add(currentBible.id);
+    }
+    comparisonBibleIds.forEach((selectedId, index) => {
+      if (index !== slot && selectedId) {
+        blocked.add(selectedId);
+      }
+    });
+
+    return bibles.filter((bible) => bible.id === comparisonBibleIds[slot] || !blocked.has(bible.id));
+  }
+
   async function selectBook(book: Book) {
     if (!currentBible) {
       return;
@@ -153,8 +210,9 @@ export default function App() {
     setActiveWordIndex(-1);
     setVerseJumpTarget(null);
     setSearchOpen(false);
-    setParallelChapter(null);
-    setParallelError(null);
+    setComparisonChapters([null, null]);
+    setComparisonBusy([false, false]);
+    setComparisonErrors([null, null]);
     setBusyLabel(`Loading ${book.name}`);
 
     try {
@@ -181,12 +239,14 @@ export default function App() {
 
       const selectedBook = books.find((book) => book.id === content.bookId);
       if (selectedBook) {
-      setCurrentBook(selectedBook);
-    }
+        setCurrentBook(selectedBook);
+      }
 
       // Kick off background TTS synthesis so audio is ready when user hits Read.
       void LogosService.PrecacheChapter(content.content ?? '');
-      setParallelError(null);
+      setComparisonChapters([null, null]);
+      setComparisonBusy([false, false]);
+      setComparisonErrors([null, null]);
     } catch (loadError) {
       setError(explainError(loadError));
     } finally {
@@ -230,7 +290,9 @@ export default function App() {
       setCurrentChapter(null);
       setActiveWordIndex(-1);
       setVerseJumpTarget(null);
-      setParallelChapter(null);
+      setComparisonChapters([null, null]);
+      setComparisonBusy([false, false]);
+      setComparisonErrors([null, null]);
       return;
     }
     if (currentBook) {
@@ -239,7 +301,9 @@ export default function App() {
       setActiveWordIndex(-1);
       setVerseJumpTarget(null);
       setChapters([]);
-      setParallelChapter(null);
+      setComparisonChapters([null, null]);
+      setComparisonBusy([false, false]);
+      setComparisonErrors([null, null]);
       return;
     }
     if (currentBible) {
@@ -251,78 +315,131 @@ export default function App() {
       setSearchResults(null);
       setBooks([]);
       setChapters([]);
-      setParallelChapter(null);
+      setComparisonChapters([null, null]);
+      setComparisonBusy([false, false]);
+      setComparisonErrors([null, null]);
     }
   }
 
   useEffect(() => {
-    if (!parallelOpen || !currentBible || !currentBook || !currentChapter || !parallelBibleId) {
-      setParallelBusy(false);
-      setParallelChapter(null);
-      return;
-    }
-
-    if (parallelBibleId === currentBible.id) {
-      setParallelBusy(false);
-      setParallelChapter(null);
-      setParallelError('Choose a second translation to compare against the current one.');
+    const visibleSlots = Math.max(0, parallelColumnCount - 1);
+    if (!currentBible || !currentBook || !currentChapter || visibleSlots === 0) {
+      setComparisonBusy([false, false]);
+      setComparisonChapters([null, null]);
+      setComparisonErrors([null, null]);
       return;
     }
 
     let cancelled = false;
+    const seen = new Set<string>();
     const referenceBook = currentBook;
     const referenceChapter = currentChapter;
 
-    async function loadComparisonChapter() {
-      setParallelBusy(true);
-      setParallelError(null);
-
-      try {
-        let comparisonBooks = comparisonBooksRef.current[parallelBibleId];
-        if (!comparisonBooks) {
-          comparisonBooks = (await LogosService.GetBooks(parallelBibleId)) as Book[];
-          comparisonBooksRef.current[parallelBibleId] = comparisonBooks;
-        }
-
-        const matchingBook = comparisonBooks.find((candidate) => matchesBook(candidate, referenceBook));
-        if (!matchingBook) {
-          throw new Error(`Could not match ${referenceBook.name} in the comparison translation.`);
-        }
-
-        const chapterCacheKey = `${parallelBibleId}:${matchingBook.id}`;
-        let comparisonChapters = comparisonChaptersRef.current[chapterCacheKey];
-        if (!comparisonChapters) {
-          comparisonChapters = (await LogosService.GetChapters(parallelBibleId, matchingBook.id)) as Chapter[];
-          comparisonChaptersRef.current[chapterCacheKey] = comparisonChapters;
-        }
-
-        const matchingChapter = comparisonChapters.find((chapter) => chapter.number === referenceChapter.number);
-        if (!matchingChapter) {
-          throw new Error(`Could not find chapter ${referenceChapter.number} in the comparison translation.`);
-        }
-
-        const nextChapter = (await LogosService.GetChapter(parallelBibleId, matchingChapter.id)) as ChapterContent;
-        if (!cancelled) {
-          setParallelChapter(nextChapter);
-        }
-      } catch (comparisonLoadError) {
-        if (!cancelled) {
-          setParallelChapter(null);
-          setParallelError(explainError(comparisonLoadError));
-        }
-      } finally {
-        if (!cancelled) {
-          setParallelBusy(false);
-        }
+    for (let slot = 0; slot < comparisonSlotCount; slot += 1) {
+      if (slot >= visibleSlots) {
+        setComparisonBusy((current) => current.map((value, index) => (index === slot ? false : value)));
+        setComparisonChapters((current) => current.map((value, index) => (index === slot ? null : value)));
+        setComparisonErrors((current) => current.map((value, index) => (index === slot ? null : value)));
+        continue;
       }
-    }
 
-    void loadComparisonChapter();
+      const bibleId = comparisonBibleIds[slot];
+      if (!bibleId) {
+        setComparisonBusy((current) => current.map((value, index) => (index === slot ? false : value)));
+        setComparisonChapters((current) => current.map((value, index) => (index === slot ? null : value)));
+        setComparisonErrors((current) =>
+          current.map((value, index) => (index === slot ? 'Choose another translation to compare this chapter.' : value)),
+        );
+        continue;
+      }
+
+      if (bibleId === currentBible.id || seen.has(bibleId)) {
+        setComparisonBusy((current) => current.map((value, index) => (index === slot ? false : value)));
+        setComparisonChapters((current) => current.map((value, index) => (index === slot ? null : value)));
+        setComparisonErrors((current) =>
+          current.map((value, index) => (index === slot ? 'Choose a different comparison translation.' : value)),
+        );
+        continue;
+      }
+
+      seen.add(bibleId);
+      setComparisonBusy((current) => current.map((value, index) => (index === slot ? true : value)));
+      setComparisonErrors((current) => current.map((value, index) => (index === slot ? null : value)));
+
+      void (async () => {
+        try {
+          let comparisonBooks = comparisonBooksRef.current[bibleId];
+          if (!comparisonBooks) {
+            comparisonBooks = (await LogosService.GetBooks(bibleId)) as Book[];
+            comparisonBooksRef.current[bibleId] = comparisonBooks;
+          }
+
+          const matchingBook = comparisonBooks.find((candidate) => matchesBook(candidate, referenceBook));
+          if (!matchingBook) {
+            throw new Error(`Could not match ${referenceBook.name} in the comparison translation.`);
+          }
+
+          const chapterCacheKey = `${bibleId}:${matchingBook.id}`;
+          let chapterList = comparisonChaptersRef.current[chapterCacheKey];
+          if (!chapterList) {
+            chapterList = (await LogosService.GetChapters(bibleId, matchingBook.id)) as Chapter[];
+            comparisonChaptersRef.current[chapterCacheKey] = chapterList;
+          }
+
+          const matchingChapter = chapterList.find((chapter) => chapter.number === referenceChapter.number);
+          if (!matchingChapter) {
+            throw new Error(`Could not find chapter ${referenceChapter.number} in the comparison translation.`);
+          }
+
+          const nextChapter = (await LogosService.GetChapter(bibleId, matchingChapter.id)) as ChapterContent;
+          if (!cancelled) {
+            setComparisonChapters((current) => current.map((value, index) => (index === slot ? nextChapter : value)));
+          }
+        } catch (comparisonLoadError) {
+          if (!cancelled) {
+            setComparisonChapters((current) => current.map((value, index) => (index === slot ? null : value)));
+            setComparisonErrors((current) =>
+              current.map((value, index) => (index === slot ? explainError(comparisonLoadError) : value)),
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setComparisonBusy((current) => current.map((value, index) => (index === slot ? false : value)));
+          }
+        }
+      })();
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [parallelOpen, parallelBibleId, currentBible?.id, currentBook?.id, currentChapter?.id]);
+  }, [parallelColumnCount, comparisonBibleIds, currentBible?.id, currentBook?.id, currentChapter?.id]);
+
+  function renderComparisonPane(slot: number) {
+    if (comparisonBusy[slot]) {
+      return (
+        <div className="mx-auto flex h-full w-full items-center justify-center px-5 py-5">
+          <div className="w-full max-w-3xl rounded-[2rem] border border-border/80 bg-surface/60 p-6 text-sm text-muted shadow-panel backdrop-blur-xl">
+            Loading comparison translation...
+          </div>
+        </div>
+      );
+    }
+
+    const chapter = comparisonChapters[slot];
+    if (chapter) {
+      const label = bibles.find((bible) => bible.id === comparisonBibleIds[slot])?.abbreviation ?? `Compare ${slot + 2}`;
+      return <Reader chapter={chapter} activeWordIndex={-1} readerLabel={label} compact />;
+    }
+
+    return (
+      <div className="mx-auto flex h-full w-full items-center justify-center px-5 py-5">
+        <div className="w-full max-w-3xl rounded-[2rem] border border-border/80 bg-surface/60 p-6 text-sm text-muted shadow-panel backdrop-blur-xl">
+          {comparisonErrors[slot] ?? 'Choose another translation to open it side by side.'}
+        </div>
+      </div>
+    );
+  }
 
   function renderMainPane() {
     if (searchOpen && currentBible) {
@@ -339,10 +456,10 @@ export default function App() {
     }
 
     if (currentChapter) {
-      if (parallelOpen) {
+      if (parallelColumnCount > 1) {
         return (
-          <div className="grid h-full min-h-0 gap-0 xl:grid-cols-2">
-            <div className="min-h-0 border-b border-border/70 xl:border-b-0 xl:border-r">
+          <div className={`grid h-full min-h-0 gap-0 ${comparisonGridClass(parallelColumnCount)}`}>
+            <div className="min-h-0">
               <Reader
                 chapter={currentChapter}
                 activeWordIndex={activeWordIndex}
@@ -356,28 +473,11 @@ export default function App() {
               />
             </div>
 
-            <div className="min-h-0">
-              {parallelBusy ? (
-                <div className="mx-auto flex h-full w-full items-center justify-center px-5 py-5">
-                  <div className="w-full max-w-3xl rounded-[2rem] border border-border/80 bg-surface/60 p-6 text-sm text-muted shadow-panel backdrop-blur-xl">
-                    Loading comparison translation...
-                  </div>
-                </div>
-              ) : parallelChapter ? (
-                <Reader
-                  chapter={parallelChapter}
-                  activeWordIndex={-1}
-                  readerLabel={bibles.find((bible) => bible.id === parallelBibleId)?.abbreviation ?? 'Compare'}
-                  compact
-                />
-              ) : (
-                <div className="mx-auto flex h-full w-full items-center justify-center px-5 py-5">
-                  <div className="w-full max-w-3xl rounded-[2rem] border border-border/80 bg-surface/60 p-6 text-sm text-muted shadow-panel backdrop-blur-xl">
-                    {parallelError ?? 'Choose a comparison translation to open it side by side.'}
-                  </div>
-                </div>
-              )}
-            </div>
+            {Array.from({ length: parallelColumnCount - 1 }, (_, slot) => (
+              <div key={`comparison-pane-${slot}`} className="min-h-0">
+                {renderComparisonPane(slot)}
+              </div>
+            ))}
           </div>
         );
       }
@@ -479,6 +579,8 @@ export default function App() {
       </div>
     );
   }
+
+  const maxColumnsAvailable = Math.min(maxParallelColumns, Math.max(1, bibles.length));
 
   return (
     <div className="flex h-screen flex-col text-text">
@@ -626,59 +728,68 @@ export default function App() {
               <>
                 {currentChapter && (
                   <section className="rounded-[1.75rem] border border-border/80 bg-bg/40 p-5 shadow-panel">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="mb-2 text-xs uppercase tracking-[0.24em] text-muted">Compare</p>
-                        <h3 className="font-display text-2xl text-text">Parallel Reading</h3>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setParallelOpen((value) => !value)}
-                        className={`rounded-full border px-4 py-2 text-sm transition ${
-                          parallelOpen
-                            ? 'border-gold/60 bg-gold/15 text-gold'
-                            : 'border-border bg-highlight/70 text-text hover:border-gold/50 hover:text-gold'
-                        }`}
-                      >
-                        {parallelOpen ? 'Disable' : 'Enable'}
-                      </button>
+                    <div>
+                      <p className="mb-2 text-xs uppercase tracking-[0.24em] text-muted">Compare</p>
+                      <h3 className="font-display text-2xl text-text">Parallel Reading</h3>
                     </div>
 
                     <p className="mt-4 text-sm leading-7 text-muted">
-                      Open the same chapter in a second translation for side-by-side comparison.
+                      Keep the same chapter synced across two or three translations so differences stay visible while
+                      you read.
                     </p>
 
-                    {parallelOpen && (
-                      <div className="mt-4 space-y-3">
-                        <label className="block text-xs uppercase tracking-[0.18em] text-muted" htmlFor="parallel-bible">
-                          Comparison translation
-                        </label>
-                        <select
-                          id="parallel-bible"
-                          value={parallelBibleId}
-                          onChange={(event) => setParallelBibleId(event.target.value)}
-                          className="w-full rounded-[1.1rem] border border-border bg-surface/70 px-4 py-3 text-sm text-text focus:border-gold/50 focus:outline-none"
+                    <div className="mt-4 grid grid-cols-3 gap-2">
+                      {[1, 2, 3].map((columnCount) => (
+                        <button
+                          key={`parallel-columns-${columnCount}`}
+                          type="button"
+                          disabled={columnCount > maxColumnsAvailable}
+                          onClick={() => handleParallelColumnChange(columnCount)}
+                          className={`rounded-2xl border px-3 py-2 text-sm transition ${
+                            parallelColumnCount === columnCount
+                              ? 'border-gold bg-gold text-bg'
+                              : 'border-border bg-highlight/70 text-text hover:border-gold/50 hover:text-gold disabled:cursor-not-allowed disabled:opacity-40'
+                          }`}
                         >
-                          {bibles
-                            .filter((bible) => bible.id !== currentBible?.id)
-                            .map((bible) => (
-                              <option key={bible.id} value={bible.id}>
-                                {bible.abbreviation} - {bible.name}
-                              </option>
-                            ))}
-                        </select>
+                          {columnCount === 1 ? 'Single' : `${columnCount}-up`}
+                        </button>
+                      ))}
+                    </div>
 
-                        {parallelBusy && (
-                          <div className="rounded-[1.2rem] border border-border bg-surface/60 px-4 py-3 text-sm text-muted">
-                            Loading the matching chapter...
-                          </div>
-                        )}
-
-                        {parallelError && (
-                          <div className="rounded-[1.2rem] border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
-                            {parallelError}
-                          </div>
-                        )}
+                    {maxColumnsAvailable === 1 ? (
+                      <div className="mt-4 rounded-[1.2rem] border border-border bg-surface/60 px-4 py-3 text-sm text-muted">
+                        Parallel reading needs at least two available translations in the current library.
+                      </div>
+                    ) : parallelColumnCount > 1 ? (
+                      <div className="mt-4 space-y-3">
+                        {Array.from({ length: parallelColumnCount - 1 }, (_, slot) => {
+                          const options = comparisonOptions(slot);
+                          return (
+                            <label
+                              key={`parallel-bible-${slot}`}
+                              className="block text-xs uppercase tracking-[0.18em] text-muted"
+                              htmlFor={`parallel-bible-${slot}`}
+                            >
+                              {slot === 0 ? 'Second translation' : 'Third translation'}
+                              <select
+                                id={`parallel-bible-${slot}`}
+                                value={comparisonBibleIds[slot]}
+                                onChange={(event) => setComparisonBibleId(slot, event.target.value)}
+                                className="mt-2 w-full rounded-[1.1rem] border border-border bg-surface/70 px-4 py-3 text-sm normal-case text-text focus:border-gold/50 focus:outline-none"
+                              >
+                                {options.map((bible) => (
+                                  <option key={bible.id} value={bible.id}>
+                                    {bible.abbreviation} - {bible.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-[1.2rem] border border-border bg-surface/60 px-4 py-3 text-sm text-muted">
+                        Switch to 2-up or 3-up when you want to compare the same chapter side by side.
                       </div>
                     )}
                   </section>
@@ -696,6 +807,12 @@ export default function App() {
                     <div className="rounded-[1.35rem] border border-border bg-surface/70 px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.22em] text-muted">Activity</div>
                       <div className="mt-1 text-sm text-text">{busyLabel || 'Ready'}</div>
+                    </div>
+                    <div className="rounded-[1.35rem] border border-border bg-surface/70 px-4 py-3">
+                      <div className="text-xs uppercase tracking-[0.22em] text-muted">Reader Layout</div>
+                      <div className="mt-1 text-sm text-text">
+                        {parallelColumnCount === 1 ? 'Single translation' : `${parallelColumnCount} synced columns`}
+                      </div>
                     </div>
                     <div className="rounded-[1.35rem] border border-border bg-surface/70 px-4 py-3">
                       <div className="text-xs uppercase tracking-[0.22em] text-muted">Language Filter</div>

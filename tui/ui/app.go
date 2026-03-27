@@ -38,6 +38,7 @@ const (
 	StateSearch
 	StateVoicePicker
 	StateLanguagePicker
+	StateComparePicker
 	StateImport
 	StateAI
 )
@@ -52,6 +53,11 @@ type biblesLoadedMsg struct {
 type booksLoadedMsg struct{ books []api.Book }
 type chaptersLoadedMsg struct{ chapters []api.Chapter }
 type chapterLoadedMsg struct{ content api.ChapterContent }
+type compareChapterLoadedMsg struct {
+	slot    int
+	content api.ChapterContent
+	err     error
+}
 type searchDoneMsg struct{ results api.SearchData }
 type errMsg struct{ err error }
 
@@ -179,6 +185,18 @@ type Model struct {
 	selectedBook         api.Book
 	currentChapter       api.ChapterContent
 	languageFilter       string
+	loadedBibles         []api.Bible
+	loadedBibleOffline   map[string]bool
+	loadedBooks          []api.Book
+	compareColumns       int
+	compareSlot          int
+	compareBibles        [2]api.Bible
+	compareOffline       [2]bool
+	compareChapters      [2]api.ChapterContent
+	compareLoading       [2]bool
+	compareErrors        [2]string
+	compareBooksCache    map[string][]api.Book
+	compareChapterCache  map[string][]api.Chapter
 
 	// Bubbles
 	bibleList    list.Model
@@ -187,6 +205,7 @@ type Model struct {
 	searchList   list.Model
 	voiceList    list.Model
 	languageList list.Model
+	compareList  list.Model
 	viewport     viewport.Model
 	searchInput  textinput.Model
 	spinner      spinner.Model
@@ -231,17 +250,21 @@ func NewModel(client *api.Client, ttsEngine *coretts.Engine, initialBibleID stri
 	si.TextStyle = lipgloss.NewStyle().Foreground(ColorText)
 
 	m := Model{
-		state:          StateLoading,
-		client:         client,
-		tts:            ttsEngine,
-		styles:         styles,
-		keys:           keys,
-		spinner:        sp,
-		searchInput:    si,
-		loading:        true,
-		languageFilter: "eng",
-		selectedBible:  api.Bible{ID: initialBibleID},
-		ttsWordIndex:   -1,
+		state:               StateLoading,
+		client:              client,
+		tts:                 ttsEngine,
+		styles:              styles,
+		keys:                keys,
+		spinner:             sp,
+		searchInput:         si,
+		loading:             true,
+		languageFilter:      "eng",
+		selectedBible:       api.Bible{ID: initialBibleID},
+		loadedBibleOffline:  map[string]bool{},
+		compareColumns:      1,
+		compareBooksCache:   map[string][]api.Book{},
+		compareChapterCache: map[string][]api.Chapter{},
+		ttsWordIndex:        -1,
 		// Pre-init all lists so SetSize never hits a zero-value struct
 		bibleList:    newStyledList([]list.Item{}, "✝  Select Translation", 80, 24),
 		bookList:     newStyledList([]list.Item{}, "✝  Select Book", 80, 24),
@@ -249,6 +272,7 @@ func NewModel(client *api.Client, ttsEngine *coretts.Engine, initialBibleID stri
 		searchList:   newStyledList([]list.Item{}, "✝  Search Results", 80, 24),
 		voiceList:    newStyledList([]list.Item{}, "✝  Select Voice", 80, 24),
 		languageList: newStyledList([]list.Item{}, "✝  Filter Language", 80, 24),
+		compareList:  newStyledList([]list.Item{}, "✝  Select Comparison Translation", 80, 24),
 	}
 	// Open local SQLite db (best-effort — TUI still works without it)
 	if ldb, err := localdb.Open(localdb.DefaultDBPath()); err == nil {
@@ -264,6 +288,64 @@ func (m Model) Init() tea.Cmd {
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
+
+func (m Model) booksForBible(bible api.Bible, offline bool) ([]api.Book, error) {
+	if offline && m.localDB != nil {
+		books, err := m.localDB.ListBooks(bible.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		out := make([]api.Book, len(books))
+		for i, b := range books {
+			abbr := b.ShortName
+			if abbr == "" {
+				abbr = b.ID
+			}
+			out[i] = api.Book{
+				ID:           b.ID,
+				BibleID:      bible.ID,
+				Abbreviation: abbr,
+				Name:         b.Name,
+				NameLong:     b.Name,
+			}
+		}
+		return out, nil
+	}
+
+	return m.client.GetBooks(bible.ID)
+}
+
+func (m Model) chaptersForBible(bible api.Bible, bookID string, offline bool) ([]api.Chapter, error) {
+	if offline && m.localDB != nil {
+		chapters, err := m.localDB.ListChapters(bookID, bible.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		out := make([]api.Chapter, len(chapters))
+		for i, c := range chapters {
+			num := strconv.Itoa(c.Number)
+			out[i] = api.Chapter{
+				ID:       c.ID,
+				BibleID:  bible.ID,
+				BookID:   bookID,
+				Number:   num,
+				Position: c.Number,
+			}
+		}
+		return out, nil
+	}
+
+	return m.client.GetChapters(bible.ID, bookID)
+}
+
+func (m Model) chapterForBible(bible api.Bible, book api.Book, chapterID string, offline bool) (api.ChapterContent, error) {
+	if offline && m.localDB != nil {
+		return m.loadOfflineChapterForBible(bible, book, chapterID)
+	}
+	return m.client.GetChapter(bible.ID, chapterID)
+}
 
 func (m Model) cmdLoadBibles() tea.Cmd {
 	filter := m.languageFilter
@@ -344,31 +426,10 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 }
 
 func (m Model) cmdLoadBooks() tea.Cmd {
-	id := m.selectedBible.ID
+	bible := m.selectedBible
+	offline := m.selectedBibleOffline
 	return func() tea.Msg {
-		if m.selectedBibleOffline && m.localDB != nil {
-			books, err := m.localDB.ListBooks(id)
-			if err != nil {
-				return errMsg{err}
-			}
-
-			out := make([]api.Book, len(books))
-			for i, b := range books {
-				abbr := b.ShortName
-				if abbr == "" {
-					abbr = b.ID
-				}
-				out[i] = api.Book{
-					ID:           b.ID,
-					BibleID:      id,
-					Abbreviation: abbr,
-					Name:         b.Name,
-					NameLong:     b.Name,
-				}
-			}
-			return booksLoadedMsg{out}
-		}
-		books, err := m.client.GetBooks(id)
+		books, err := m.booksForBible(bible, offline)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -377,28 +438,9 @@ func (m Model) cmdLoadBooks() tea.Cmd {
 }
 
 func (m Model) cmdLoadChapters() tea.Cmd {
-	bid, bookID := m.selectedBible.ID, m.selectedBook.ID
+	bible, bookID, offline := m.selectedBible, m.selectedBook.ID, m.selectedBibleOffline
 	return func() tea.Msg {
-		if m.selectedBibleOffline && m.localDB != nil {
-			chapters, err := m.localDB.ListChapters(bookID, bid)
-			if err != nil {
-				return errMsg{err}
-			}
-
-			out := make([]api.Chapter, len(chapters))
-			for i, c := range chapters {
-				num := strconv.Itoa(c.Number)
-				out[i] = api.Chapter{
-					ID:       c.ID,
-					BibleID:  bid,
-					BookID:   bookID,
-					Number:   num,
-					Position: c.Number,
-				}
-			}
-			return chaptersLoadedMsg{out}
-		}
-		chapters, err := m.client.GetChapters(bid, bookID)
+		chapters, err := m.chaptersForBible(bible, bookID, offline)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -407,20 +449,75 @@ func (m Model) cmdLoadChapters() tea.Cmd {
 }
 
 func (m Model) cmdLoadChapter(chapterID string) tea.Cmd {
-	bid := m.selectedBible.ID
+	bible, book, offline := m.selectedBible, m.selectedBook, m.selectedBibleOffline
 	return func() tea.Msg {
-		if m.selectedBibleOffline && m.localDB != nil {
-			ch, err := m.loadOfflineChapter(chapterID)
-			if err != nil {
-				return errMsg{err}
-			}
-			return chapterLoadedMsg{ch}
-		}
-		ch, err := m.client.GetChapter(bid, chapterID)
+		ch, err := m.chapterForBible(bible, book, chapterID, offline)
 		if err != nil {
 			return errMsg{err}
 		}
 		return chapterLoadedMsg{ch}
+	}
+}
+
+func (m Model) cmdLoadCompareChapter(slot int) tea.Cmd {
+	if slot < 0 || slot >= len(m.compareBibles) {
+		return nil
+	}
+	bible := m.compareBibles[slot]
+	if bible.ID == "" || m.currentChapter.ID == "" {
+		return nil
+	}
+	offline := m.compareOffline[slot]
+	referenceBook := m.selectedBook
+	referenceChapter := m.currentChapter
+	return func() tea.Msg {
+		books := m.compareBooksCache[bible.ID]
+		var err error
+		if len(books) == 0 {
+			books, err = m.booksForBible(bible, offline)
+			if err != nil {
+				return compareChapterLoadedMsg{slot: slot, err: err}
+			}
+			m.compareBooksCache[bible.ID] = books
+		}
+
+		matchingBook := api.Book{}
+		for _, candidate := range books {
+			if matchesBookByText(candidate, referenceBook) {
+				matchingBook = candidate
+				break
+			}
+		}
+		if matchingBook.ID == "" {
+			return compareChapterLoadedMsg{slot: slot, err: fmt.Errorf("could not match %s in the comparison translation", referenceBook.Name)}
+		}
+
+		cacheKey := bible.ID + ":" + matchingBook.ID
+		chapters := m.compareChapterCache[cacheKey]
+		if len(chapters) == 0 {
+			chapters, err = m.chaptersForBible(bible, matchingBook.ID, offline)
+			if err != nil {
+				return compareChapterLoadedMsg{slot: slot, err: err}
+			}
+			m.compareChapterCache[cacheKey] = chapters
+		}
+
+		var chapterID string
+		for _, ch := range chapters {
+			if ch.Number == referenceChapter.Number {
+				chapterID = ch.ID
+				break
+			}
+		}
+		if chapterID == "" {
+			return compareChapterLoadedMsg{slot: slot, err: fmt.Errorf("could not find chapter %s in the comparison translation", referenceChapter.Number)}
+		}
+
+		content, err := m.chapterForBible(bible, matchingBook, chapterID, offline)
+		if err != nil {
+			return compareChapterLoadedMsg{slot: slot, err: err}
+		}
+		return compareChapterLoadedMsg{slot: slot, content: content}
 	}
 }
 
@@ -506,6 +603,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchList.SetSize(msg.Width, h)
 		m.voiceList.SetSize(msg.Width, h)
 		m.languageList.SetSize(msg.Width, h)
+		m.compareList.SetSize(msg.Width, h)
 		if m.state == StateReader {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = h
@@ -531,9 +629,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case biblesLoadedMsg:
 		m.loading = false
+		m.loadedBibles = msg.bibles
+		m.loadedBibleOffline = map[string]bool{}
 		items := make([]list.Item, len(msg.bibles))
 		for i, b := range msg.bibles {
 			offline := i < len(msg.offlineFlags) && msg.offlineFlags[i]
+			m.loadedBibleOffline[b.ID] = offline
 			items[i] = bibleItem{b: b, offline: offline}
 		}
 		title := "✝  Select Translation  [" + m.languageFilterLabel() + "]"
@@ -556,11 +657,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectedBook = api.Book{}
 			m.currentChapter = api.ChapterContent{}
 		}
+		if maxCols := m.maxCompareColumns(); m.compareColumns > maxCols {
+			m.compareColumns = maxCols
+		}
+		m.normalizeCompareSelections()
 		m.state = StateBibles
 		return m, nil
 
 	case booksLoadedMsg:
 		m.loading = false
+		m.loadedBooks = msg.books
 		items := make([]list.Item, len(msg.books))
 		for i, b := range msg.books {
 			items[i] = bookItem{b}
@@ -582,15 +688,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chapterLoadedMsg:
 		m.loading = false
 		m.currentChapter = msg.content
+		for _, book := range m.loadedBooks {
+			if book.ID == msg.content.BookID {
+				m.selectedBook = book
+				break
+			}
+		}
+		m.clearCompareContent()
 		m.ttsSpeaking = false
 		m.ttsPaused = false
 		m.ttsWordIndex = -1
 		m.ttsCleanText = coretts.CleanForTTS(msg.content.Content)
 		m.ttsWords = coretts.SplitWords(m.ttsCleanText)
 		m.viewport = viewport.New(m.width, m.contentHeight())
+		cmds := m.compareLoadCmds()
 		m.setReaderContent(-1)
 		m.viewport.GotoTop()
 		m.state = StateReader
+		return m, tea.Batch(cmds...)
+
+	case compareChapterLoadedMsg:
+		if msg.slot >= 0 && msg.slot < len(m.compareChapters) {
+			m.compareLoading[msg.slot] = false
+			if msg.err != nil {
+				m.compareChapters[msg.slot] = api.ChapterContent{}
+				m.compareErrors[msg.slot] = msg.err.Error()
+			} else {
+				m.compareChapters[msg.slot] = msg.content
+				m.compareErrors[msg.slot] = ""
+			}
+			if m.state == StateReader {
+				m.setReaderContent(m.ttsWordIndex)
+			}
+		}
 		return m, nil
 
 	case searchDoneMsg:
@@ -733,7 +863,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseButtonLeft:
 		// Left-click in reader: jump TTS playback to the clicked word
-		if msg.Action == tea.MouseActionRelease && m.state == StateReader && m.ttsSpeaking {
+		if msg.Action == tea.MouseActionRelease && m.state == StateReader && m.ttsSpeaking && m.compareColumns == 1 {
 			wordIdx := m.wordIdxAtClick(msg.X, msg.Y)
 			return m.jumpToWord(wordIdx)
 		}
@@ -878,6 +1008,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.toggleTTSPause()
 		case "v":
 			return m.openVoicePicker()
+		case "1":
+			m.compareColumns = 1
+			m.clearCompareContent()
+			m.setReaderContent(m.ttsWordIndex)
+			return m, nil
+		case "2":
+			if m.maxCompareColumns() < 2 {
+				m.statusMsg = "Parallel reading needs at least two translations."
+				return m, nil
+			}
+			m.compareColumns = 2
+			m.normalizeCompareSelections()
+			cmds := m.compareLoadCmds()
+			m.setReaderContent(m.ttsWordIndex)
+			return m, tea.Batch(cmds...)
+		case "3":
+			if m.maxCompareColumns() < 3 {
+				m.statusMsg = "Three-column comparison needs at least three translations."
+				return m, nil
+			}
+			m.compareColumns = 3
+			m.normalizeCompareSelections()
+			cmds := m.compareLoadCmds()
+			m.setReaderContent(m.ttsWordIndex)
+			return m, tea.Batch(cmds...)
+		case "c":
+			return m.openComparePicker(0)
+		case "C":
+			return m.openComparePicker(1)
 		case "n", "]":
 			if m.currentChapter.Next != nil {
 				if m.tts != nil {
@@ -959,6 +1118,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case StateComparePicker:
+		switch msg.String() {
+		case "esc", "backspace":
+			m.state = m.prevState
+			return m, nil
+		case "enter", "right", "l":
+			if item, ok := m.compareList.SelectedItem().(bibleItem); ok {
+				m.compareBibles[m.compareSlot] = item.b
+				m.compareOffline[m.compareSlot] = item.offline
+				m.compareErrors[m.compareSlot] = ""
+				m.state = m.prevState
+				cmds := m.compareLoadCmds()
+				if m.currentChapter.ID != "" {
+					m.setReaderContent(m.ttsWordIndex)
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
 	case StateImport:
 		if m.importPanel != nil {
 			var cmd tea.Cmd
@@ -1023,12 +1201,70 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // setReaderContent renders the current chapter with word-wrapping and sets it
 // on the viewport. wordIdx = -1 means no TTS highlighting.
 func (m *Model) setReaderContent(wordIdx int) {
+	if m.compareColumns > 1 {
+		m.viewport.SetContent(m.renderParallelReaderContent(wordIdx))
+		return
+	}
 	w := m.width - 4
 	if w < 40 {
 		w = 40
 	}
 	raw := renderChapterContent(m.currentChapter, wordIdx, m.styles, m.width)
 	m.viewport.SetContent(wordwrap.String(raw, w))
+}
+
+func (m Model) renderReaderColumn(ch api.ChapterContent, label string, wordIdx int, width int) string {
+	contentWidth := width - 4
+	if contentWidth < 24 {
+		contentWidth = 24
+	}
+	raw := m.styles.HeaderCrumb.Render(strings.ToUpper(label)) + "\n" + renderChapterContent(ch, wordIdx, m.styles, width)
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(wordwrap.String(raw, contentWidth))
+}
+
+func (m Model) renderCompareColumn(slot int, width int) string {
+	label := fmt.Sprintf("Compare %d", slot+2)
+	if m.compareBibles[slot].Abbreviation != "" {
+		label = stripLangPrefix(m.compareBibles[slot].Abbreviation)
+	}
+
+	var raw string
+	switch {
+	case m.compareLoading[slot]:
+		raw = m.styles.HeaderTitle.Render(label) + "\n\n" + m.styles.Muted.Render("Loading matching chapter…")
+	case m.compareErrors[slot] != "":
+		raw = m.styles.HeaderTitle.Render(label) + "\n\n" + m.styles.Error.Render(m.compareErrors[slot])
+	case m.compareChapters[slot].ID != "":
+		return m.renderReaderColumn(m.compareChapters[slot], label, -1, width)
+	default:
+		raw = m.styles.HeaderTitle.Render(label) + "\n\n" + m.styles.Muted.Render("Choose another translation for this column.")
+	}
+
+	contentWidth := width - 4
+	if contentWidth < 24 {
+		contentWidth = 24
+	}
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(wordwrap.String(raw, contentWidth))
+}
+
+func (m Model) renderParallelReaderContent(wordIdx int) string {
+	columns := m.compareColumns
+	if columns < 2 {
+		return ""
+	}
+	columnWidth := (m.width - 2*(columns-1)) / columns
+	if columnWidth < 30 {
+		columnWidth = 30
+	}
+
+	panes := []string{
+		m.renderReaderColumn(m.currentChapter, stripLangPrefix(m.selectedBible.Abbreviation), wordIdx, columnWidth),
+	}
+	for slot := 0; slot < columns-1 && slot < len(m.compareBibles); slot++ {
+		panes = append(panes, m.renderCompareColumn(slot, columnWidth))
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 }
 
 // setAIContent renders the AI panel's streamed content with optional TTS word
@@ -1092,6 +1328,165 @@ func (m Model) toggleTTSPause() (Model, tea.Cmd) {
 		m.tts.Pause()
 		m.ttsPaused = true
 	}
+	return m, nil
+}
+
+func (m Model) maxCompareColumns() int {
+	if len(m.loadedBibles) >= 3 {
+		return 3
+	}
+	if len(m.loadedBibles) >= 2 {
+		return 2
+	}
+	return 1
+}
+
+func (m *Model) clearCompareContent() {
+	for i := range m.compareChapters {
+		m.compareChapters[i] = api.ChapterContent{}
+		m.compareLoading[i] = false
+		m.compareErrors[i] = ""
+	}
+}
+
+func (m *Model) nextCompareFallback(slot int) (api.Bible, bool) {
+	used := map[string]bool{}
+	if m.selectedBible.ID != "" {
+		used[m.selectedBible.ID] = true
+	}
+	for i, bible := range m.compareBibles {
+		if i != slot && bible.ID != "" {
+			used[bible.ID] = true
+		}
+	}
+	for _, bible := range m.loadedBibles {
+		if !used[bible.ID] {
+			return bible, true
+		}
+	}
+	return api.Bible{}, false
+}
+
+func (m *Model) ensureCompareSlotSelection(slot int) bool {
+	if slot < 0 || slot >= len(m.compareBibles) {
+		return false
+	}
+	current := m.compareBibles[slot]
+	if current.ID != "" && current.ID != m.selectedBible.ID {
+		if _, ok := m.loadedBibleOffline[current.ID]; ok {
+			duplicate := false
+			for i, bible := range m.compareBibles {
+				if i != slot && bible.ID != "" && bible.ID == current.ID {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				m.compareOffline[slot] = m.loadedBibleOffline[current.ID]
+				return true
+			}
+		}
+	}
+
+	fallback, ok := m.nextCompareFallback(slot)
+	if !ok {
+		m.compareBibles[slot] = api.Bible{}
+		m.compareOffline[slot] = false
+		return false
+	}
+	m.compareBibles[slot] = fallback
+	m.compareOffline[slot] = m.loadedBibleOffline[fallback.ID]
+	return true
+}
+
+func (m *Model) normalizeCompareSelections() {
+	for slot := range m.compareBibles {
+		visible := slot < m.compareColumns-1
+		if !visible {
+			if m.compareBibles[slot].ID != "" {
+				m.compareOffline[slot] = m.loadedBibleOffline[m.compareBibles[slot].ID]
+			}
+			continue
+		}
+		m.ensureCompareSlotSelection(slot)
+	}
+}
+
+func (m *Model) compareLoadCmds() []tea.Cmd {
+	visible := m.compareColumns - 1
+	if visible <= 0 || m.currentChapter.ID == "" || m.selectedBook.ID == "" {
+		m.clearCompareContent()
+		return nil
+	}
+
+	var cmds []tea.Cmd
+	for slot := range m.compareBibles {
+		if slot >= visible {
+			m.compareChapters[slot] = api.ChapterContent{}
+			m.compareLoading[slot] = false
+			m.compareErrors[slot] = ""
+			continue
+		}
+
+		if !m.ensureCompareSlotSelection(slot) {
+			m.compareChapters[slot] = api.ChapterContent{}
+			m.compareLoading[slot] = false
+			m.compareErrors[slot] = "Choose another translation for this comparison column."
+			continue
+		}
+
+		m.compareChapters[slot] = api.ChapterContent{}
+		m.compareLoading[slot] = true
+		m.compareErrors[slot] = ""
+		cmds = append(cmds, m.cmdLoadCompareChapter(slot))
+	}
+
+	return cmds
+}
+
+func (m Model) availableCompareItems(slot int) []list.Item {
+	items := make([]list.Item, 0, len(m.loadedBibles))
+	for _, bible := range m.loadedBibles {
+		if bible.ID == m.selectedBible.ID {
+			continue
+		}
+		duplicate := false
+		for idx, selected := range m.compareBibles {
+			if idx != slot && selected.ID != "" && selected.ID == bible.ID {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		items = append(items, bibleItem{b: bible, offline: m.loadedBibleOffline[bible.ID]})
+	}
+	return items
+}
+
+func (m Model) openComparePicker(slot int) (Model, tea.Cmd) {
+	items := m.availableCompareItems(slot)
+	if len(items) == 0 {
+		m.statusMsg = "No additional translations are available for comparison."
+		return m, nil
+	}
+
+	title := "✝  Select Comparison Translation"
+	if slot == 1 {
+		title = "✝  Select Third Column Translation"
+	}
+	m.compareList = newStyledList(items, title, m.width, m.contentHeight())
+	m.compareSlot = slot
+	currentID := m.compareBibles[slot].ID
+	for idx, item := range items {
+		if selected, ok := item.(bibleItem); ok && selected.b.ID == currentID {
+			m.compareList.Select(idx)
+			break
+		}
+	}
+	m.prevState = m.state
+	m.state = StateComparePicker
 	return m, nil
 }
 
@@ -1266,6 +1661,8 @@ func (m Model) updateActiveComponent(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.voiceList, cmd = m.voiceList.Update(msg)
 	case StateLanguagePicker:
 		m.languageList, cmd = m.languageList.Update(msg)
+	case StateComparePicker:
+		m.compareList, cmd = m.compareList.Update(msg)
 		// StateImport is handled directly in the key handler above
 	}
 	return m, cmd
@@ -1309,6 +1706,9 @@ func (m Model) View() string {
 	case StateLanguagePicker:
 		m.languageList.SetSize(m.width, h)
 		body = m.languageList.View()
+	case StateComparePicker:
+		m.compareList.SetSize(m.width, h)
+		body = m.compareList.View()
 	case StateImport:
 		if m.importPanel != nil {
 			m.importPanel.SetSize(m.width, h)
@@ -1359,6 +1759,9 @@ func (m Model) renderHeader() string {
 	if m.currentChapter.Number != "" && (m.state == StateReader || m.state == StateVoicePicker) {
 		crumbs = append(crumbs, "Ch. "+m.currentChapter.Number)
 	}
+	if m.compareColumns > 1 && m.state == StateReader {
+		crumbs = append(crumbs, fmt.Sprintf("%d-up", m.compareColumns))
+	}
 	crumb := ""
 	if len(crumbs) > 0 {
 		crumb = m.styles.HeaderCrumb.Render("  ›  " + strings.Join(crumbs, " › "))
@@ -1400,11 +1803,19 @@ func (m Model) renderFooter() string {
 		hints = "↑↓ navigate  •  enter select  •  f language  •  esc back  •  / search  •  q quit"
 	case StateReader:
 		if m.ttsSpeaking && m.ttsPaused {
-			hints = "↑↓ scroll  •  space resume  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			if m.compareColumns > 1 {
+				hints = "↑↓ scroll  •  1/2/3 layout  •  c/C choose compare  •  space resume  •  S stop  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			} else {
+				hints = "↑↓ scroll  •  space resume  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			}
 		} else if m.ttsSpeaking {
-			hints = "↑↓ scroll  •  space pause  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			if m.compareColumns > 1 {
+				hints = "↑↓ scroll  •  1/2/3 layout  •  c/C choose compare  •  space pause  •  S stop  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			} else {
+				hints = "↑↓ scroll  •  space pause  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
+			}
 		} else {
-			hints = "↑↓ scroll  •  s speak  •  a AI  •  v voice  •  n/[ ch  •  / search  •  esc back  •  q quit"
+			hints = "↑↓ scroll  •  s speak  •  1/2/3 layout  •  c/C choose compare  •  a AI  •  v voice  •  n/[ ch  •  / search  •  esc back  •  q quit"
 		}
 	case StateSearch:
 		hints = "↑↓ navigate  •  enter open  •  / new search  •  esc back  •  q quit"
@@ -1412,6 +1823,8 @@ func (m Model) renderFooter() string {
 		hints = "↑↓ navigate  •  enter select voice  •  esc cancel"
 	case StateLanguagePicker:
 		hints = "↑↓ navigate  •  enter choose language  •  esc cancel"
+	case StateComparePicker:
+		hints = "↑↓ navigate  •  enter select comparison translation  •  esc cancel"
 	case StateImport:
 		if m.importPanel != nil {
 			hints = m.importPanel.Hints()
@@ -1531,17 +1944,21 @@ func Run(client *api.Client, engine *coretts.Engine) error {
 }
 
 func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) {
+	return m.loadOfflineChapterForBible(m.selectedBible, m.selectedBook, chapterID)
+}
+
+func (m Model) loadOfflineChapterForBible(bible api.Bible, book api.Book, chapterID string) (api.ChapterContent, error) {
 	if m.localDB == nil {
 		return api.ChapterContent{}, fmt.Errorf("local bible database unavailable")
 	}
 
 	bookID, _, found := strings.Cut(chapterID, ".")
 	if !found || bookID == "" {
-		bookID = m.selectedBook.ID
+		bookID = book.ID
 	}
 
-	bookName := m.selectedBook.Name
-	if books, err := m.localDB.ListBooks(m.selectedBible.ID); err == nil {
+	bookName := book.Name
+	if books, err := m.localDB.ListBooks(bible.ID); err == nil {
 		for _, b := range books {
 			if b.ID == bookID {
 				bookName = b.Name
@@ -1550,12 +1967,12 @@ func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) 
 		}
 	}
 
-	content, err := m.localDB.GetChapterContent(chapterID, m.selectedBible.ID)
+	content, err := m.localDB.GetChapterContent(chapterID, bible.ID)
 	if err != nil {
 		return api.ChapterContent{}, err
 	}
 
-	chapters, err := m.localDB.ListChapters(bookID, m.selectedBible.ID)
+	chapters, err := m.localDB.ListChapters(bookID, bible.ID)
 	if err != nil {
 		return api.ChapterContent{}, err
 	}
@@ -1592,16 +2009,51 @@ func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) 
 
 	return api.ChapterContent{
 		ID:         chapterID,
-		BibleID:    m.selectedBible.ID,
+		BibleID:    bible.ID,
 		BookID:     bookID,
 		Number:     number,
 		Reference:  fmt.Sprintf("%s %s", bookName, number),
 		Content:    strings.TrimSpace(content),
 		VerseCount: strings.Count(content, "["),
-		Copyright:  fmt.Sprintf("%s (offline import)", m.selectedBible.Name),
+		Copyright:  fmt.Sprintf("%s (offline import)", bible.Name),
 		Next:       next,
 		Previous:   prev,
 	}, nil
+}
+
+func normalizeBookKey(value string) string {
+	var out strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func matchesBookByText(candidate, target api.Book) bool {
+	candidateKeys := []string{
+		normalizeBookKey(candidate.Abbreviation),
+		normalizeBookKey(candidate.Name),
+		normalizeBookKey(candidate.NameLong),
+	}
+	targetKeys := []string{
+		normalizeBookKey(target.Abbreviation),
+		normalizeBookKey(target.Name),
+		normalizeBookKey(target.NameLong),
+	}
+
+	for _, targetKey := range targetKeys {
+		if targetKey == "" {
+			continue
+		}
+		for _, candidateKey := range candidateKeys {
+			if candidateKey == targetKey {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stripLangPrefix removes any leading ISO-639-3 or ISO-639-1 language code from
