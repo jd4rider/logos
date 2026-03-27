@@ -32,6 +32,12 @@ That updates:
 - `packaging/homebrew/Casks/logos-ai.rb`
 - `packaging/scoop/logos-ai.json`
 
+The published URLs should point at the public release-assets repo:
+
+- `jd4rider/logos-releases` for release downloads and `install.sh`
+- `jd4rider/homebrew-logos-ai` for the Homebrew tap
+- `jd4rider/scoop-logos-ai` for the Scoop bucket
+
 The macOS tarball intentionally contains both `logos-ai.app` and the `logos` CLI so the same asset works for
 Homebrew and for `install.sh`.
 

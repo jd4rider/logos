@@ -2,55 +2,152 @@ package main
 
 import (
 	"embed"
-	"os"
+	"log"
+	"runtime"
 
 	"github.com/jd4rider/logos/internal/api"
-	coretts "github.com/jd4rider/logos/internal/tts"
-
-	"github.com/joho/godotenv"
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/jd4rider/logos/internal/tts"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed build/appicon.png
+var appIcon []byte
+
+const (
+	popupMinWidth  = 980
+	popupMinHeight = 680
+	startupMargin  = 20
+)
+
+func sizeWindowToPrimaryWorkArea(app *application.App, window *application.WebviewWindow) {
+	screen := app.Screen.GetPrimary()
+	if screen == nil {
+		return
+	}
+
+	work := screen.WorkArea
+	width := work.Width - (startupMargin * 2)
+	height := work.Height - (startupMargin * 2)
+	if width < popupMinWidth {
+		width = popupMinWidth
+	}
+	if height < popupMinHeight {
+		height = popupMinHeight
+	}
+	if width > work.Width {
+		width = work.Width
+	}
+	if height > work.Height {
+		height = work.Height
+	}
+
+	x := work.X + ((work.Width - width) / 2)
+	y := work.Y + ((work.Height - height) / 2)
+	window.SetBounds(application.Rect{
+		X:      x,
+		Y:      y,
+		Width:  width,
+		Height: height,
+	})
+}
+
 func main() {
-	_ = godotenv.Load()
+	prepareDesktopRuntime()
 
-	apiKey := os.Getenv("API_BIBLE_KEY")
-	piperModel := os.Getenv("PIPER_MODEL")
+	service := NewLogosService(
+		api.NewClient(runtimeEnv("API_BIBLE_KEY")),
+		tts.New(runtimeEnv("PIPER_MODEL")),
+	)
 
-	client := api.NewClient(apiKey)
-	ttsEng := coretts.New(piperModel)
-	app := NewApp(client, ttsEng)
-
-	err := wails.Run(&options.App{
-		Title:            "Logos AI",
-		Width:            1440,
-		Height:           900,
-		MinWidth:         1100,
-		MinHeight:        720,
-		StartHidden:      false,
-		WindowStartState: options.Maximised,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
+	app := application.New(application.Options{
+		Name:        "Logos AI",
+		Description: "Menu bar Bible reader powered by the Logos backend",
+		Services: []application.Service{
+			application.NewService(service),
 		},
-		BackgroundColour: &options.RGBA{R: 13, G: 13, B: 26, A: 255},
-		OnStartup:        app.startup,
-		OnDomReady:       app.domReady,
-		Bind:             []interface{}{app},
-		Mac: &mac.Options{
-			TitleBar: mac.TitleBarHiddenInset(),
-			About: &mac.AboutInfo{
-				Title:   "Logos AI",
-				Message: "AI-assisted Bible reader desktop app",
-			},
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(assets),
+		},
+		Mac: application.MacOptions{
+			ActivationPolicy: application.ActivationPolicyAccessory,
+		},
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
 		},
 	})
-	if err != nil {
-		println("Error:", err.Error())
+	if len(appIcon) > 0 {
+		app.SetIcon(appIcon)
+	}
+
+	popup := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "logos-popup",
+		Title:            "Logos AI",
+		URL:              "/",
+		Width:            1180,
+		Height:           820,
+		MinWidth:         popupMinWidth,
+		MinHeight:        popupMinHeight,
+		AlwaysOnTop:      true,
+		Hidden:           true,
+		HideOnEscape:     true,
+		HideOnFocusLost:  true,
+		BackgroundType:   application.BackgroundTypeTranslucent,
+		BackgroundColour: application.NewRGB(8, 17, 28),
+		Mac: application.MacWindow{
+			Backdrop:                application.MacBackdropTranslucent,
+			TitleBar:                application.MacTitleBarHiddenInset,
+			InvisibleTitleBarHeight: 54,
+			WindowLevel:             application.MacWindowLevelPopUpMenu,
+			CollectionBehavior: application.MacWindowCollectionBehaviorMoveToActiveSpace |
+				application.MacWindowCollectionBehaviorTransient |
+				application.MacWindowCollectionBehaviorFullScreenAuxiliary,
+		},
+		Windows: application.WindowsWindow{
+			HiddenOnTaskbar: true,
+		},
+	})
+
+	popup.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		popup.Hide()
+		event.Cancel()
+	})
+
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		sizeWindowToPrimaryWorkArea(app, popup)
+		popup.Show()
+		popup.Focus()
+	})
+
+	tray := app.SystemTray.New()
+	tray.SetTooltip("Logos AI")
+
+	if runtime.GOOS == "darwin" {
+		tray.SetLabel("W")
+	} else if len(appIcon) > 0 {
+		tray.SetIcon(appIcon)
+	}
+
+	menu := app.NewMenu()
+	menu.Add("Open Logos AI").OnClick(func(*application.Context) {
+		popup.Show()
+		popup.Focus()
+	})
+	menu.Add("Hide").OnClick(func(*application.Context) {
+		popup.Hide()
+	})
+	menu.AddSeparator()
+	menu.Add("Quit").OnClick(func(*application.Context) {
+		app.Quit()
+	})
+
+	tray.SetMenu(menu)
+	tray.AttachWindow(popup).WindowOffset(6)
+
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
 	}
 }

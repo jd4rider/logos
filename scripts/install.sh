@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${REPO:-jd4rider/logos}"
+REPO="${REPO:-jd4rider/logos-releases}"
 INSTALL_DIR="${LOGOS_INSTALL_DIR:-$HOME/.local/bin}"
 APP_DIR="${LOGOS_APP_DIR:-$HOME/Applications}"
 

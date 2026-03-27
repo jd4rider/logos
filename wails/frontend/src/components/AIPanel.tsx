@@ -1,12 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
-import {
-  StartAIStream, StopAIStream, IsAIAvailable,
-  SaveToLibrary, ListLibrary, ExportPDF
-} from '../wailsjs/go/main/App';
-import type { LibraryEntry, AIAction } from '../types';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Events } from '@wailsio/runtime';
+import { LogosService } from '../bindings';
+import type { AIAction, LibraryEntry, SyncedSpeechPlan } from '../types';
 
 interface Props {
+  mode: 'chat' | 'tools';
   verseRef: string;
   verseText: string;
   chapterText: string;
@@ -14,6 +12,25 @@ interface Props {
   chapterNum: string;
   translation: string;
   onClose: () => void;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  label?: string;
+  action?: AIAction | 'chat';
+}
+
+type View = 'chat' | 'library';
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/^#+\s+/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function renderMarkdown(text: string): string {
@@ -27,256 +44,809 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
-type View = 'menu' | 'typing' | 'streaming' | 'result' | 'library';
+function createMessageId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-export default function AIPanel({ verseRef, verseText, chapterText, bookName, chapterNum, translation, onClose }: Props) {
-  const [view, setView] = useState<View>('menu');
-  const [streamText, setStreamText] = useState('');
-  const [resultText, setResultText] = useState('');
-  const [currentAction, setCurrentAction] = useState<AIAction>('explain_verse');
-  const [userInput, setUserInput] = useState('');
-  const [aiAvailable, setAIAvailable] = useState(false);
+function buildConversationPrompt(messages: ChatMessage[]) {
+  const history = messages
+    .slice(-8)
+    .map((message) => `${message.role === 'user' ? 'User' : 'Pastor'}: ${stripMarkdown(message.content)}`)
+    .join('\n\n');
+
+  return history;
+}
+
+function ThinkingSpinner() {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <svg className="h-4 w-4 animate-spin text-gold" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" className="opacity-20" stroke="currentColor" strokeWidth="4" />
+        <path
+          className="opacity-90"
+          fill="currentColor"
+          d="M12 2a10 10 0 0 1 10 10h-4a6 6 0 0 0-6-6V2z"
+        />
+      </svg>
+      <span>Thinking...</span>
+    </span>
+  );
+}
+
+function speakerName(role: ChatMessage['role']) {
+  return role === 'user' ? 'User' : 'Logos';
+}
+
+function outputKindForAction(action: AIAction | 'chat' | null) {
+  if (action === 'devotional') {
+    return 'devotional';
+  }
+  if (action === 'sermon') {
+    return 'sermon';
+  }
+  return 'note';
+}
+
+function outputTitleForAction(action: AIAction | 'chat' | null, verseRef: string) {
+  switch (action) {
+    case 'explain_chapter':
+      return `Passage notes - ${verseRef}`;
+    case 'devotional':
+      return `Devotional - ${verseRef}`;
+    case 'sermon':
+      return `Sermon outline - ${verseRef}`;
+    case 'chat':
+    case 'ask':
+      return `Logos Chat - ${verseRef}`;
+    default:
+      return `Study note - ${verseRef}`;
+  }
+}
+
+function WordHighlight({ text, activeWord }: { text: string; activeWord: number }) {
+  const words = text.split(/\s+/).filter(Boolean);
+  return (
+    <p className="whitespace-pre-wrap text-sm leading-8 text-text">
+      {words.map((word, i) => (
+        <span key={i}>
+          {i > 0 && ' '}
+          <span
+            className={
+              i === activeWord
+                ? 'rounded-md bg-gold/20 px-1 py-0.5 text-gold shadow-[0_0_0_1px_rgba(245,191,82,0.35)]'
+                : ''
+            }
+          >
+            {word}
+          </span>
+        </span>
+      ))}
+    </p>
+  );
+}
+
+export default function AIPanel({
+  mode,
+  verseRef,
+  verseText,
+  chapterText,
+  bookName,
+  chapterNum,
+  translation,
+  onClose,
+}: Props) {
+  const [view, setView] = useState<View>('chat');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
+  const [currentAction, setCurrentAction] = useState<AIAction | 'chat' | null>(null);
+  const [currentLabel, setCurrentLabel] = useState('Logos Chat');
+  const [selectedOutput, setSelectedOutput] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
-  const [saveStatus, setSaveStatus] = useState('');
-  const [exportStatus, setExportStatus] = useState('');
-  const streamRef = useRef('');
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [activeWord, setActiveWord] = useState(-1);
+  const [precaching, setPrecaching] = useState(false);
+
+  const sessionRef = useRef(0);
+  const timersRef = useRef<number[]>([]);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const chatMessagesRef = useRef<ChatMessage[]>([]);
+  const streamingTextRef = useRef('');
+  const modeRef = useRef(mode);
+  const currentActionRef = useRef<AIAction | 'chat' | null>(null);
+  const currentLabelRef = useRef('Logos Chat');
+
+  function clearHighlightTimers() {
+    timersRef.current.forEach((timer) => window.clearTimeout(timer));
+    timersRef.current = [];
+  }
+
+  function stopReadingState() {
+    sessionRef.current += 1;
+    clearHighlightTimers();
+    setActiveWord(-1);
+    setSpeaking(false);
+    setStarting(false);
+  }
+
+  function scheduleHighlights(plan: SyncedSpeechPlan, sessionId: number) {
+    clearHighlightTimers();
+    const durations = plan.wordDurationsMs ?? [];
+    if (durations.length === 0) {
+      setActiveWord(-1);
+      return;
+    }
+
+    setActiveWord(0);
+    let elapsed = 0;
+    for (let i = 1; i < durations.length; i++) {
+      elapsed += Math.max(durations[i - 1] ?? 0, 1);
+      const captured = i;
+      const timer = window.setTimeout(() => {
+        if (sessionRef.current !== sessionId) {
+          return;
+        }
+        setActiveWord(captured);
+      }, elapsed);
+      timersRef.current.push(timer);
+    }
+  }
+
+  function commitStreamingMessage() {
+    const finalText = streamingTextRef.current.trim();
+    if (!finalText) {
+      setStreaming(false);
+      setStreamingText('');
+      streamingTextRef.current = '';
+      return;
+    }
+
+    const message: ChatMessage = {
+      id: createMessageId(),
+      role: 'assistant',
+      content: finalText,
+      label: currentLabelRef.current,
+      action: currentActionRef.current ?? 'chat',
+    };
+
+    if (modeRef.current === 'chat') {
+      setChatMessages((previous) => {
+        const next = [...previous, message];
+        chatMessagesRef.current = next;
+        return next;
+      });
+    }
+    setSelectedOutput(finalText);
+    setPrecaching(true);
+    setStreaming(false);
+    setStreamingText('');
+    streamingTextRef.current = '';
+    void LogosService.StartAIPrecache(finalText).then(() => setPrecaching(false)).catch(() => setPrecaching(false));
+  }
 
   useEffect(() => {
-    IsAIAvailable().then(setAIAvailable).catch(() => setAIAvailable(false));
+    void LogosService.IsAIAvailable().then((value: unknown) => setAiAvailable(value as boolean));
   }, []);
 
   useEffect(() => {
-    const onToken = (token: string) => {
-      streamRef.current += token;
-      setStreamText(streamRef.current);
-      scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
-    };
-    const onDone = () => {
-      setResultText(streamRef.current);
-      setView('result');
-    };
-    const onError = (err: string) => {
-      setResultText('Error: ' + err);
-      setView('result');
-    };
+    modeRef.current = mode;
+  }, [mode]);
 
-    EventsOn('ai:token', onToken);
-    EventsOn('ai:done', onDone);
-    EventsOn('ai:error', onError);
+  useEffect(() => {
+    const unsubToken = Events.On('ai:token', (event) => {
+      streamingTextRef.current += event.data as string;
+      setStreamingText(streamingTextRef.current);
+    });
+    const unsubDone = Events.On('ai:done', () => {
+      commitStreamingMessage();
+    });
+    const unsubError = Events.On('ai:error', (event) => {
+      setError(event.data as string);
+      setStreaming(false);
+      setStreamingText('');
+      streamingTextRef.current = '';
+    });
+
     return () => {
-      EventsOff('ai:token');
-      EventsOff('ai:done');
-      EventsOff('ai:error');
+      unsubToken();
+      unsubDone();
+      unsubError();
     };
   }, []);
 
-  const startStream = useCallback((action: AIAction, input = '') => {
-    streamRef.current = '';
-    setStreamText('');
-    setView('streaming');
-    StartAIStream(action, verseRef, verseText, chapterText, bookName, chapterNum, translation, input);
-  }, [verseRef, verseText, chapterText, bookName, chapterNum, translation]);
+  useEffect(() => {
+    if (!speaking) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void LogosService.IsSpeaking()
+        .then((active: unknown) => {
+          if (!active) {
+            stopReadingState();
+          }
+        })
+        .catch(() => undefined);
+    }, 450);
+    return () => window.clearInterval(interval);
+  }, [speaking]);
 
-  const handleMenuAction = (action: AIAction) => {
-    if (action === 'library') {
-      setView('library');
-      ListLibrary().then(setLibrary).catch(() => {});
+  useEffect(() => {
+    return () => {
+      sessionRef.current += 1;
+      clearHighlightTimers();
+    };
+  }, []);
+
+  useEffect(() => {
+    setView('chat');
+    setChatMessages([]);
+    chatMessagesRef.current = [];
+    setChatInput('');
+    setStreaming(false);
+    setStreamingText('');
+    setSelectedOutput('');
+    setSelectedEntry(null);
+    setError(null);
+    currentActionRef.current = null;
+    currentLabelRef.current = 'Logos Chat';
+    streamingTextRef.current = '';
+    void handleStop();
+  }, [verseRef, chapterText]);
+
+  useEffect(() => {
+    if (!transcriptRef.current) {
       return;
     }
-    if (action === 'ask') {
-      setCurrentAction('ask');
-      setView('typing');
-      return;
-    }
+    transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+  }, [chatMessages, streamingText, view]);
+
+  async function beginStream(action: AIAction | 'chat', label: string, input: string) {
+    setError(null);
+    stopReadingState();
+    setPrecaching(false);
+    setSelectedOutput('');
+    setStreaming(true);
+    setStreamingText('');
+    streamingTextRef.current = '';
     setCurrentAction(action);
-    startStream(action);
-  };
+    setCurrentLabel(label);
+    currentActionRef.current = action;
+    currentLabelRef.current = label;
 
-  const handleSave = async () => {
-    const model = 'ollama';
-    const kindMap: Record<string, string> = {
-      explain_verse: 'note', explain_chapter: 'note',
-      devotional: 'devotional', sermon: 'sermon', ask: 'note',
-    };
-    const kind = kindMap[currentAction] ?? 'note';
-    const title = `${currentAction.replace('_', ' ')} - ${verseRef}`;
-    try {
-      await SaveToLibrary(kind, title, verseRef, resultText, model);
-      setSaveStatus('Saved!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } catch (e) {
-      setSaveStatus('Error: ' + String(e));
+    await LogosService.StartAIStream(
+      action === 'chat' ? 'ask' : action,
+      verseRef,
+      verseText,
+      chapterText,
+      bookName,
+      chapterNum,
+      translation,
+      input,
+    );
+  }
+
+  async function startQuickAction(action: AIAction) {
+    setView('chat');
+    setSelectedEntry(null);
+    await beginStream(action, actionLabel[action], '');
+  }
+
+  async function sendChatMessage() {
+    const question = chatInput.trim();
+    if (!question || !aiAvailable || streaming) {
+      return;
     }
-  };
 
-  const handleExport = async () => {
-    const kindMap: Record<string, string> = {
-      devotional: 'devotional', sermon: 'sermon',
+    const nextUserMessage: ChatMessage = {
+      id: createMessageId(),
+      role: 'user',
+      content: question,
+      label: 'You',
+      action: 'chat',
     };
-    const kind = kindMap[currentAction] ?? 'note';
-    const title = `${currentAction.replace('_', ' ')} - ${verseRef}`;
-    try {
-      const path = await ExportPDF(kind, title, verseRef, resultText);
-      setExportStatus('Exported to ' + path);
-      setTimeout(() => setExportStatus(''), 3000);
-    } catch (e) {
-      setExportStatus('Error: ' + String(e));
-    }
-  };
 
-  const menuItems: { action: AIAction; label: string; icon: string }[] = [
-    { action: 'explain_verse', label: 'Explain Verse', icon: '📖' },
-    { action: 'explain_chapter', label: 'Explain Chapter', icon: '📚' },
-    { action: 'devotional', label: 'Generate Devotional', icon: '🙏' },
-    { action: 'sermon', label: 'Generate Sermon', icon: '✝' },
-    { action: 'ask', label: 'Ask a Question', icon: '💬' },
-    { action: 'library', label: 'My Library', icon: '🗂' },
-  ];
+    const nextConversation = [...chatMessagesRef.current, nextUserMessage];
+    setChatMessages(nextConversation);
+    chatMessagesRef.current = nextConversation;
+    setChatInput('');
+    await beginStream('chat', 'Logos Chat', buildConversationPrompt(nextConversation));
+  }
+
+  function stopStream() {
+    void LogosService.StopAIStream();
+    commitStreamingMessage();
+  }
+
+  async function handleReadAloud(text: string, entryKind?: string, entryId?: number) {
+    if (speaking || starting) {
+      const wasStarting = starting;
+      stopReadingState();
+      if (!wasStarting) {
+        await LogosService.StopSpeaking().catch(() => undefined);
+      }
+      return;
+    }
+
+    const sessionId = sessionRef.current + 1;
+    sessionRef.current = sessionId;
+    clearHighlightTimers();
+    setStarting(true);
+    setActiveWord(-1);
+
+    try {
+      let plan: SyncedSpeechPlan;
+      if (entryKind && entryId) {
+        plan = (await LogosService.GetLibraryAudio(entryKind, entryId, text)) as SyncedSpeechPlan;
+      } else {
+        plan = (await LogosService.SpeakAIContent(text)) as SyncedSpeechPlan;
+      }
+
+      if (sessionRef.current !== sessionId) {
+        return;
+      }
+
+      setSpeaking(true);
+      setStarting(false);
+      scheduleHighlights(plan, sessionId);
+    } catch {
+      if (sessionRef.current === sessionId) {
+        stopReadingState();
+      }
+    }
+  }
+
+  async function handleStop() {
+    stopReadingState();
+    await LogosService.StopSpeaking().catch(() => undefined);
+  }
+
+  async function loadLibrary() {
+    const entries = (await LogosService.ListLibrary()) as LibraryEntry[];
+    setLibrary(entries ?? []);
+    setSelectedEntry(null);
+    setView('library');
+  }
+
+  function openEntry(entry: LibraryEntry) {
+    setSelectedEntry(entry);
+    void LogosService.StartAIPrecache(entry.content).catch(() => undefined);
+  }
+
+  async function saveResult() {
+    if (!selectedOutput) {
+      return;
+    }
+
+    await LogosService.SaveToLibrary(
+      outputKindForAction(currentActionRef.current),
+      outputTitleForAction(currentActionRef.current, verseRef),
+      verseRef,
+      selectedOutput,
+      'ollama',
+    );
+  }
+
+  async function exportPDF(kind: string, title: string, ref: string, content: string) {
+    await LogosService.ExportPDF(kind, title, ref, content);
+  }
+
+  function readButtonLabel() {
+    if (starting) {
+      return 'Starting...';
+    }
+    if (speaking) {
+      return 'Stop';
+    }
+    if (precaching) {
+      return 'Preparing...';
+    }
+    return 'Read Aloud';
+  }
+
+  function ReadAloudButton({ text, kind, id }: { text: string; kind?: string; id?: number }) {
+    const isActive = speaking || starting;
+    return (
+      <button
+        type="button"
+        disabled={precaching && !isActive}
+        onClick={() => void handleReadAloud(text, kind, id)}
+        className={`flex-1 rounded-full border py-2 text-sm transition ${
+          isActive
+            ? 'border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20'
+            : 'border-gold/40 bg-gold/10 text-gold hover:bg-gold/20 disabled:opacity-50'
+        }`}
+      >
+        {readButtonLabel()}
+      </button>
+    );
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendChatMessage();
+    }
+  }
+
+  const actionLabel: Record<AIAction, string> = {
+    explain_verse: 'Explain Verse',
+    explain_chapter: 'Pastoral Overview',
+    devotional: 'Devotional',
+    sermon: 'Sermon Outline',
+    ask: 'Logos Chat',
+  };
+  const isThinking = streaming && streamingText.trim().length === 0;
+  const showLibraryBack = mode === 'tools' && view === 'library';
 
   return (
-    <div className="flex flex-col h-full bg-surface border-l border-border w-80 flex-shrink-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="text-gold font-semibold text-sm uppercase tracking-wider">✝ AI Assistant</span>
-        <div className="flex items-center gap-2">
-          {view !== 'menu' && (
+    <div className="flex h-full min-h-0 flex-col rounded-[1.75rem] border border-border/80 bg-bg/60 backdrop-blur-xl">
+      <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-muted">
+            {mode === 'chat' ? 'Logos Chat' : 'AI Tools'}
+          </p>
+          <p className="mt-0.5 text-sm font-medium text-text">{verseRef || 'Open a chapter'}</p>
+        </div>
+        <div className="flex gap-2">
+          {showLibraryBack && (
             <button
-              onClick={() => { StopAIStream(); setView('menu'); }}
-              className="text-xs text-muted hover:text-text"
+              type="button"
+              onClick={() => {
+                void handleStop();
+                setSelectedEntry(null);
+                setView('chat');
+              }}
+              className="rounded-full border border-border px-3 py-1 text-xs text-muted hover:text-text"
             >
-              ← Menu
+              Back
             </button>
           )}
-          <button onClick={onClose} className="text-muted hover:text-text text-lg leading-none">×</button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleStop();
+              onClose();
+            }}
+            className="rounded-full border border-border px-3 py-1 text-xs text-muted hover:text-text"
+          >
+            Close
+          </button>
         </div>
       </div>
 
-      {/* Verse context */}
-      {verseRef && (
-        <div className="px-4 py-2 bg-highlight/30 border-b border-border/50">
-          <div className="text-xs text-gold font-medium">{verseRef}</div>
-          {verseText && <div className="text-xs text-muted mt-1 line-clamp-2">{verseText}</div>}
-        </div>
-      )}
-
-      {!aiAvailable && (
-        <div className="px-4 py-2 text-xs text-amber-400 bg-amber-900/20 border-b border-amber-700/30">
-          ⚠ Ollama not detected. AI features require Ollama running locally.
-        </div>
-      )}
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto" ref={scrollRef}>
-        {view === 'menu' && (
-          <div className="p-3 space-y-2">
-            {menuItems.map(item => (
-              <button
-                key={item.action}
-                onClick={() => handleMenuAction(item.action)}
-                className="w-full text-left px-3 py-2 rounded border border-border hover:border-gold hover:bg-highlight/50 transition-colors flex items-center gap-2"
-              >
-                <span>{item.icon}</span>
-                <span className="text-sm text-text">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {view === 'typing' && (
-          <div className="p-4 space-y-3">
-            <p className="text-xs text-muted">Ask a question about this verse or chapter:</p>
-            <textarea
-              value={userInput}
-              onChange={e => setUserInput(e.target.value)}
-              placeholder="What does this verse mean in context?"
-              className="w-full h-24 bg-bg border border-border rounded p-2 text-sm text-text resize-none focus:border-gold outline-none"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={() => { startStream('ask', userInput); }}
-                disabled={!userInput.trim()}
-                className="flex-1 px-3 py-2 text-sm bg-highlight text-gold border border-gold rounded hover:bg-gold hover:text-bg transition-colors disabled:opacity-50"
-              >
-                Ask
-              </button>
-              <button onClick={() => setView('menu')} className="px-3 py-2 text-sm text-muted border border-border rounded hover:text-text">
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {view === 'streaming' && (
-          <div className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-gold text-sm animate-pulse">⟳ Generating…</span>
-              <button onClick={() => { StopAIStream(); setView('menu'); }} className="text-xs text-muted hover:text-red-400">Stop</button>
-            </div>
-            <div className="text-sm text-text leading-relaxed whitespace-pre-wrap font-sans">{streamText}</div>
-          </div>
-        )}
-
-        {view === 'result' && (
-          <div className="p-4">
-            <div
-              className="text-sm text-text leading-relaxed prose-sm"
-              dangerouslySetInnerHTML={{ __html: '<p class="mb-3">' + renderMarkdown(resultText) + '</p>' }}
-            />
-            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-border">
-              <button onClick={handleSave} className="px-3 py-1 text-xs bg-highlight border border-border rounded hover:border-gold text-text">
-                �� Save
-              </button>
-              <button onClick={handleExport} className="px-3 py-1 text-xs bg-highlight border border-border rounded hover:border-gold text-text">
-                📄 Export PDF
-              </button>
-            </div>
-            {saveStatus && <p className="text-xs text-green-400 mt-2">{saveStatus}</p>}
-            {exportStatus && <p className="text-xs text-green-400 mt-2">{exportStatus}</p>}
-          </div>
-        )}
-
-        {view === 'library' && (
-          <div className="p-3">
-            {selectedEntry ? (
-              <div>
-                <button onClick={() => setSelectedEntry(null)} className="text-xs text-muted hover:text-text mb-2">← Back to list</button>
-                <div className="text-xs text-gold font-medium mb-1">{selectedEntry.title}</div>
-                <div className="text-xs text-muted mb-2">{selectedEntry.ref} · {selectedEntry.date}</div>
-                <div className="text-sm text-text leading-relaxed whitespace-pre-wrap">{selectedEntry.content}</div>
+      {mode === 'chat' && (
+        <>
+          <div className="border-b border-border/60 p-4">
+            {!aiAvailable && (
+              <div className="mb-4 rounded-[1.2rem] border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-200">
+                Ollama is not running. Start Ollama to enable Logos Chat.
               </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gold uppercase tracking-wider">Saved Items</span>
-                  <button onClick={() => ListLibrary().then(setLibrary).catch(() => {})} className="text-xs text-muted hover:text-text">↻ Refresh</button>
+            )}
+
+            <div className="rounded-[1.35rem] border border-border bg-surface/55 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-gold/35 bg-gold/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-gold">
+                  {translation}
+                </span>
+                <span className="text-[0.72rem] uppercase tracking-[0.2em] text-muted">
+                  {bookName} {chapterNum}
+                </span>
+              </div>
+              <p className="mt-3 text-sm leading-7 text-muted">
+                Ask about the passage open in the center reader. This pane stays focused on the conversation only.
+              </p>
+            </div>
+          </div>
+
+          <div ref={transcriptRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+            {chatMessages.length === 0 && !streaming && (
+              <div className="rounded-[1.2rem] border border-dashed border-border/70 bg-bg/30 px-4 py-5 text-sm leading-7 text-muted">
+                Start with a question like "What is happening in this passage?", "How should I apply this?", or
+                "What would a pastor emphasize here?".
+              </div>
+            )}
+
+            {chatMessages.map((message) => (
+              <div key={message.id} className="rounded-[1.25rem] border border-border/70 bg-surface/40 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span
+                    className={`rounded-full px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] ${
+                      message.role === 'user'
+                        ? 'border border-accent/35 bg-accent/10 text-accent'
+                        : 'border border-gold/35 bg-gold/10 text-gold'
+                    }`}
+                  >
+                    {speakerName(message.role)}
+                  </span>
+                  {message.label && message.label !== 'You' && message.label !== 'Logos Chat' && (
+                    <span className="text-[0.68rem] uppercase tracking-[0.18em] text-muted">{message.label}</span>
+                  )}
                 </div>
-                {library.length === 0 ? (
-                  <p className="text-xs text-muted">No saved items yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {library.map(e => (
-                      <button
-                        key={`${e.kind}-${e.id}`}
-                        onClick={() => setSelectedEntry(e)}
-                        className="w-full text-left p-2 rounded border border-border hover:border-gold transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs uppercase text-muted">{e.kind}</span>
-                          <span className="text-xs text-muted">{e.date}</span>
-                        </div>
-                        <div className="text-sm text-text truncate mt-0.5">{e.title}</div>
-                        <div className="text-xs text-muted">{e.ref}</div>
-                      </button>
-                    ))}
+                <div
+                  className="text-sm leading-7 text-text"
+                  dangerouslySetInnerHTML={{ __html: `<p class="mb-3">${renderMarkdown(message.content)}</p>` }}
+                />
+              </div>
+            ))}
+
+            {streaming && (
+              <div className="rounded-[1.25rem] border border-border/70 bg-surface/40 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="rounded-full border border-gold/35 bg-gold/10 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-gold">
+                    Logos
+                  </span>
+                </div>
+                {isThinking ? (
+                  <div className="rounded-[1rem] border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-gold">
+                    <ThinkingSpinner />
                   </div>
+                ) : (
+                  <div
+                    className="text-sm leading-7 text-text"
+                    dangerouslySetInnerHTML={{
+                      __html: `<p class="mb-3">${renderMarkdown(streamingText)}</p>`,
+                    }}
+                  />
                 )}
-              </>
+              </div>
             )}
           </div>
-        )}
-      </div>
+
+          <div className="border-t border-border/60 bg-bg/65 p-4 backdrop-blur-xl">
+            {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
+            <div className="rounded-[1.35rem] border border-border bg-bg/45 p-3">
+              <label className="mb-2 block text-[0.72rem] uppercase tracking-[0.18em] text-muted">
+                Continue The Conversation
+              </label>
+              <textarea
+                className="min-h-[94px] w-full resize-none rounded-[1rem] border border-border bg-surface/60 px-4 py-3 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none"
+                placeholder="Ask Logos about this passage..."
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+              />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-[0.72rem] uppercase tracking-[0.18em] text-muted">
+                  {isThinking ? (
+                    <span className="inline-flex items-center gap-2 text-gold">
+                      <ThinkingSpinner />
+                    </span>
+                  ) : streaming ? (
+                    'Generating response...'
+                  ) : (
+                    'Enter to send. Shift+Enter for a new line.'
+                  )}
+                </p>
+                {streaming ? (
+                  <button
+                    type="button"
+                    onClick={stopStream}
+                    className="rounded-full border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300 transition hover:bg-red-500/20"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void sendChatMessage()}
+                    disabled={!chatInput.trim() || !aiAvailable}
+                    className="rounded-full border border-gold/40 bg-gold/10 px-4 py-2 text-sm text-gold transition hover:bg-gold/20 disabled:opacity-40"
+                  >
+                    Send
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {mode === 'tools' && view !== 'library' && (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {!aiAvailable && (
+            <div className="mb-4 rounded-[1.2rem] border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-xs text-yellow-200">
+              Ollama is not running. Start Ollama to enable AI tools.
+            </div>
+          )}
+
+          <div className="rounded-[1.35rem] border border-border bg-surface/55 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-accent/35 bg-accent/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-accent">
+                {translation}
+              </span>
+              <span className="text-[0.72rem] uppercase tracking-[0.2em] text-muted">
+                {bookName} {chapterNum}
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-7 text-muted">
+              Generate focused study outputs for this passage without mixing them into the conversation transcript.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!aiAvailable || streaming}
+                onClick={() => void startQuickAction('explain_chapter')}
+                className="rounded-full border border-border bg-bg/40 px-3 py-2 text-xs text-text transition hover:border-gold/40 hover:text-gold disabled:opacity-40"
+              >
+                Explain this passage
+              </button>
+              <button
+                type="button"
+                disabled={!aiAvailable || streaming}
+                onClick={() => void startQuickAction('devotional')}
+                className="rounded-full border border-border bg-bg/40 px-3 py-2 text-xs text-text transition hover:border-gold/40 hover:text-gold disabled:opacity-40"
+              >
+                Write a devotional
+              </button>
+              <button
+                type="button"
+                disabled={!aiAvailable || streaming}
+                onClick={() => void startQuickAction('sermon')}
+                className="rounded-full border border-border bg-bg/40 px-3 py-2 text-xs text-text transition hover:border-gold/40 hover:text-gold disabled:opacity-40"
+              >
+                Build a sermon outline
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadLibrary()}
+                className="rounded-full border border-border/60 bg-bg/40 px-3 py-2 text-xs text-muted transition hover:text-text"
+              >
+                Library
+              </button>
+            </div>
+          </div>
+
+          {error && <p className="mt-4 text-xs text-red-400">{error}</p>}
+
+          <div className="mt-4 space-y-4">
+            {!streaming && !selectedOutput && (
+              <div className="rounded-[1.2rem] border border-dashed border-border/70 bg-bg/30 px-4 py-5 text-sm leading-7 text-muted">
+                Choose one of the tools above to generate a passage explanation, devotional, or sermon outline.
+              </div>
+            )}
+
+            {streaming && (
+              <div className="rounded-[1.25rem] border border-border/70 bg-surface/40 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="rounded-full border border-accent/35 bg-accent/10 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-accent">
+                    AI Tool
+                  </span>
+                  <span className="text-[0.68rem] uppercase tracking-[0.18em] text-muted">{currentLabel}</span>
+                </div>
+                {isThinking ? (
+                  <div className="rounded-[1rem] border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-gold">
+                    <ThinkingSpinner />
+                  </div>
+                ) : (
+                  <div
+                    className="text-sm leading-7 text-text"
+                    dangerouslySetInnerHTML={{
+                      __html: `<p class="mb-3">${renderMarkdown(streamingText)}</p>`,
+                    }}
+                  />
+                )}
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={stopStream}
+                    className="rounded-full border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300 transition hover:bg-red-500/20"
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!streaming && Boolean(selectedOutput) && (
+              <div className="rounded-[1.25rem] border border-border/70 bg-surface/40 px-4 py-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="rounded-full border border-accent/35 bg-accent/10 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-accent">
+                    AI Tool
+                  </span>
+                  <span className="text-[0.68rem] uppercase tracking-[0.18em] text-muted">{currentLabel}</span>
+                </div>
+                <div
+                  className="text-sm leading-7 text-text"
+                  dangerouslySetInnerHTML={{
+                    __html: `<p class="mb-3">${renderMarkdown(selectedOutput)}</p>`,
+                  }}
+                />
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <ReadAloudButton text={selectedOutput} />
+                  <button
+                    type="button"
+                    onClick={() => void saveResult()}
+                    className="flex-1 rounded-full border border-accent/40 bg-accent/10 py-2 text-sm text-accent transition hover:bg-accent/20"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void exportPDF(
+                        outputKindForAction(currentActionRef.current),
+                        outputTitleForAction(currentActionRef.current, verseRef),
+                        verseRef,
+                        selectedOutput,
+                      )
+                    }
+                    className="flex-1 rounded-full border border-border py-2 text-sm text-muted transition hover:text-text"
+                  >
+                    PDF
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {mode === 'tools' && view === 'library' && (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {!selectedEntry && (
+            <div className="space-y-2">
+            {library.length === 0 ? (
+              <p className="text-sm text-muted">No saved items yet.</p>
+            ) : (
+              library.map((entry) => (
+                <button
+                  key={`${entry.kind}-${entry.id}`}
+                  type="button"
+                  onClick={() => openEntry(entry)}
+                  className="w-full rounded-[1.35rem] border border-border bg-surface/60 px-4 py-3 text-left transition hover:border-gold/40"
+                >
+                  <p className="text-xs uppercase tracking-[0.18em] text-muted">
+                    {entry.kind} - {entry.date}
+                  </p>
+                  <p className="mt-1 truncate text-sm text-text">{entry.title}</p>
+                  {entry.ref && <p className="mt-0.5 text-xs text-muted">{entry.ref}</p>}
+                </button>
+              ))
+            )}
+            </div>
+          )}
+
+          {selectedEntry && (
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-gold">{selectedEntry.kind}</p>
+              <p className="text-sm text-muted">
+                {selectedEntry.ref} - {selectedEntry.date}
+              </p>
+
+              {speaking ? (
+                <div className="max-h-[50vh] overflow-y-auto rounded-[1.2rem] border border-border bg-surface/60 px-4 py-3">
+                  <WordHighlight text={stripMarkdown(selectedEntry.content)} activeWord={activeWord} />
+                </div>
+              ) : (
+                <div
+                  className="max-h-[50vh] overflow-y-auto rounded-[1.2rem] border border-border bg-surface/60 px-4 py-3 text-sm leading-7 text-text"
+                  dangerouslySetInnerHTML={{
+                    __html: `<p class="mb-3">${renderMarkdown(selectedEntry.content)}</p>`,
+                  }}
+                />
+              )}
+
+              <div className="flex gap-2">
+                <ReadAloudButton text={selectedEntry.content} kind={selectedEntry.kind} id={selectedEntry.id} />
+                <button
+                  type="button"
+                  onClick={() =>
+                    void exportPDF(selectedEntry.kind, selectedEntry.title, selectedEntry.ref, selectedEntry.content)
+                  }
+                  className="flex-1 rounded-full border border-border py-2 text-sm text-muted transition hover:text-text"
+                >
+                  PDF
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

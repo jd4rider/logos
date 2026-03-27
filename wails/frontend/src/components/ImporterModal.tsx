@@ -1,205 +1,184 @@
 import { useState, useEffect } from 'react';
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
-import { ImportBibleURL, ImportBibleFile, CancelImport, OpenFileDialog } from '../wailsjs/go/main/App';
+import { Events } from '@wailsio/runtime';
+import { LogosService } from '../bindings';
 
 interface Props {
   onClose: () => void;
+  onImported: () => void;
 }
 
-type Mode = 'url' | 'file';
-
-export default function ImporterModal({ onClose }: Props) {
-  const [mode, setMode] = useState<Mode>('url');
+export default function ImporterModal({ onClose, onImported }: Props) {
+  const [tab, setTab] = useState<'url' | 'file'>('url');
   const [url, setUrl] = useState('');
   const [filePath, setFilePath] = useState('');
   const [name, setName] = useState('');
   const [abbr, setAbbr] = useState('');
   const [lang, setLang] = useState('eng');
-  const [importing, setImporting] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
-  const [progress, setProgress] = useState<string[]>([]);
-  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
-    const onProgress = (msg: string) => setProgress(p => [...p, msg]);
-    const onDone = () => { setImporting(false); setDone(true); };
-    const onError = (err: string) => { setImporting(false); setErrorMsg(err); };
-
-    EventsOn('import:progress', onProgress);
-    EventsOn('import:done', onDone);
-    EventsOn('import:error', onError);
+    const unsubProgress = Events.On('import:progress', (ev) => {
+      setLog((prev) => [...prev, ev.data as string]);
+    });
+    const unsubDone = Events.On('import:done', (ev) => {
+      setLog((prev) => [...prev, ev.data as string]);
+      setRunning(false);
+      setDone(true);
+      onImported();
+    });
+    const unsubError = Events.On('import:error', (ev) => {
+      setLog((prev) => [...prev, '⚠ ' + (ev.data as string)]);
+      setRunning(false);
+    });
     return () => {
-      EventsOff('import:progress');
-      EventsOff('import:done');
-      EventsOff('import:error');
+      unsubProgress();
+      unsubDone();
+      unsubError();
     };
-  }, []);
+  }, [onImported]);
 
-  const handleBrowse = async () => {
-    try {
-      const path = await OpenFileDialog();
-      if (path) setFilePath(path);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleImport = () => {
-    setImporting(true);
+  async function startImport() {
+    setLog([]);
+    setRunning(true);
     setDone(false);
-    setErrorMsg('');
-    setProgress([]);
-    if (mode === 'url') {
-      ImportBibleURL(url, name, abbr, lang);
+    if (tab === 'url') {
+      await LogosService.ImportBibleURL(url, name, abbr, lang);
     } else {
-      ImportBibleFile(filePath, name, abbr, lang);
+      await LogosService.ImportBibleFile(filePath, name, abbr, lang);
     }
-  };
+  }
 
-  const handleCancel = () => {
-    CancelImport();
-    setImporting(false);
-  };
+  function cancel() {
+    void LogosService.CancelImport();
+    setRunning(false);
+  }
+
+  async function pickFile() {
+    const path = await LogosService.OpenFileDialog() as string;
+    if (path) setFilePath(path);
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-surface border border-border rounded-lg w-[520px] max-h-[80vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-          <span className="text-gold font-semibold">📥 Import Bible</span>
-          <button onClick={onClose} className="text-muted hover:text-text text-xl">×</button>
-        </div>
-
-        {/* Mode toggle */}
-        <div className="flex px-5 pt-4 gap-2">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[2rem] border border-border/80 bg-bg shadow-panel">
+        <div className="flex items-center justify-between border-b border-border/60 px-6 py-5">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-muted">Import</p>
+            <h2 className="mt-0.5 font-display text-2xl text-text">Bible Importer</h2>
+          </div>
           <button
-            onClick={() => setMode('url')}
-            className={`px-3 py-1 text-sm rounded border transition-colors ${mode === 'url' ? 'border-gold text-gold bg-highlight' : 'border-border text-muted hover:border-gold'}`}
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-border px-3 py-1 text-xs text-muted hover:text-text"
           >
-            From URL
-          </button>
-          <button
-            onClick={() => setMode('file')}
-            className={`px-3 py-1 text-sm rounded border transition-colors ${mode === 'file' ? 'border-gold text-gold bg-highlight' : 'border-border text-muted hover:border-gold'}`}
-          >
-            From File
+            Close
           </button>
         </div>
 
-        {/* Form */}
-        <div className="px-5 py-4 space-y-3 overflow-y-auto flex-1">
-          {mode === 'url' ? (
-            <div>
-              <label className="text-xs text-muted block mb-1">URL (e.g. BibleGateway chapter URL)</label>
+        <div className="p-6 space-y-4">
+          {/* Tabs */}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setTab('url')}
+              className={`rounded-full border px-4 py-1.5 text-sm transition ${tab === 'url' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-border text-muted hover:text-text'}`}
+            >
+              URL Crawler
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('file')}
+              className={`rounded-full border px-4 py-1.5 text-sm transition ${tab === 'file' ? 'border-gold/50 bg-gold/10 text-gold' : 'border-border text-muted hover:text-text'}`}
+            >
+              Local File
+            </button>
+          </div>
+
+          {/* Fields */}
+          <div className="space-y-3">
+            {tab === 'url' ? (
               <input
                 type="text"
+                placeholder="https://www.biblegateway.com/passage/…"
                 value={url}
-                onChange={e => setUrl(e.target.value)}
-                placeholder="https://www.biblegateway.com/passage/..."
-                className="w-full bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:border-gold outline-none"
+                onChange={(e) => setUrl(e.target.value)}
+                className="w-full rounded-[1.2rem] border border-border bg-surface/70 px-4 py-2.5 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none"
               />
-            </div>
-          ) : (
-            <div>
-              <label className="text-xs text-muted block mb-1">File Path (.csv, .db, .sqlite)</label>
+            ) : (
               <div className="flex gap-2">
                 <input
                   type="text"
+                  readOnly
+                  placeholder="No file selected"
                   value={filePath}
-                  onChange={e => setFilePath(e.target.value)}
-                  placeholder="/path/to/bible.csv"
-                  className="flex-1 bg-bg border border-border rounded px-3 py-1.5 text-sm text-text focus:border-gold outline-none"
+                  className="flex-1 rounded-[1.2rem] border border-border bg-surface/70 px-4 py-2.5 text-sm text-text placeholder:text-muted"
                 />
                 <button
-                  onClick={handleBrowse}
-                  className="px-3 py-1.5 text-sm border border-border rounded hover:border-gold text-muted hover:text-text transition-colors"
+                  type="button"
+                  onClick={() => void pickFile()}
+                  className="rounded-[1.2rem] border border-border bg-surface/70 px-4 py-2.5 text-sm text-muted hover:text-text"
                 >
                   Browse
                 </button>
               </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="text-xs text-muted block mb-1">Name</label>
+            )}
+            <div className="grid grid-cols-3 gap-2">
               <input
                 type="text"
+                placeholder="Name"
                 value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="King James Version"
-                className="w-full bg-bg border border-border rounded px-2 py-1.5 text-sm text-text focus:border-gold outline-none"
+                onChange={(e) => setName(e.target.value)}
+                className="rounded-[1.2rem] border border-border bg-surface/70 px-3 py-2 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none col-span-1"
               />
-            </div>
-            <div>
-              <label className="text-xs text-muted block mb-1">Abbreviation</label>
               <input
                 type="text"
+                placeholder="Abbr (e.g. NIV)"
                 value={abbr}
-                onChange={e => setAbbr(e.target.value)}
-                placeholder="KJV"
-                className="w-full bg-bg border border-border rounded px-2 py-1.5 text-sm text-text focus:border-gold outline-none"
+                onChange={(e) => setAbbr(e.target.value)}
+                className="rounded-[1.2rem] border border-border bg-surface/70 px-3 py-2 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none"
               />
-            </div>
-            <div>
-              <label className="text-xs text-muted block mb-1">Language</label>
               <input
                 type="text"
+                placeholder="Lang (e.g. eng)"
                 value={lang}
-                onChange={e => setLang(e.target.value)}
-                placeholder="eng"
-                className="w-full bg-bg border border-border rounded px-2 py-1.5 text-sm text-text focus:border-gold outline-none"
+                onChange={(e) => setLang(e.target.value)}
+                className="rounded-[1.2rem] border border-border bg-surface/70 px-3 py-2 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none"
               />
             </div>
           </div>
 
           {/* Progress log */}
-          {(progress.length > 0 || importing) && (
-            <div className="bg-bg border border-border rounded p-2 max-h-36 overflow-y-auto">
-              {importing && progress.length === 0 && (
-                <span className="text-gold text-xs animate-pulse">Starting import…</span>
-              )}
-              {progress.map((msg, i) => (
-                <div key={i} className="text-xs text-muted font-mono">{msg}</div>
+          {log.length > 0 && (
+            <div className="max-h-36 overflow-y-auto rounded-[1.2rem] border border-border bg-surface/40 px-4 py-3 space-y-1">
+              {log.map((line, i) => (
+                <p key={i} className="text-xs text-muted">{line}</p>
               ))}
             </div>
           )}
 
-          {errorMsg && (
-            <div className="bg-red-900/30 border border-red-700 rounded p-2 text-red-300 text-xs">
-              ✗ {errorMsg}
-            </div>
-          )}
-
-          {done && (
-            <div className="bg-green-900/30 border border-green-700 rounded p-2 text-green-300 text-sm text-center">
-              ✓ Import complete!
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-between items-center px-5 py-3 border-t border-border">
-          {importing ? (
-            <button onClick={handleCancel} className="px-3 py-1.5 text-sm bg-red-900/40 text-red-300 border border-red-700 rounded hover:bg-red-900">
-              Cancel Import
-            </button>
-          ) : done ? (
-            <button onClick={onClose} className="px-4 py-1.5 text-sm bg-highlight text-gold border border-gold rounded hover:bg-gold hover:text-bg transition-colors">
-              Done
-            </button>
-          ) : (
-            <button
-              onClick={handleImport}
-              disabled={mode === 'url' ? !url.trim() : !filePath.trim()}
-              className="px-4 py-1.5 text-sm bg-highlight text-gold border border-gold rounded hover:bg-gold hover:text-bg transition-colors disabled:opacity-50"
-            >
-              Import
-            </button>
-          )}
-          <button onClick={onClose} className="px-3 py-1.5 text-sm text-muted border border-border rounded hover:text-text">
-            Close
-          </button>
+          {/* Actions */}
+          <div className="flex gap-2 pt-1">
+            {running ? (
+              <button
+                type="button"
+                onClick={cancel}
+                className="flex-1 rounded-full border border-red-500/40 bg-red-500/10 py-2.5 text-sm text-red-300 transition hover:bg-red-500/20"
+              >
+                Cancel Import
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void startImport()}
+                disabled={tab === 'url' ? !url.trim() : !filePath.trim()}
+                className="flex-1 rounded-full border border-gold/40 bg-gold/10 py-2.5 text-sm text-gold transition hover:bg-gold/20 disabled:opacity-40"
+              >
+                {done ? 'Import Again' : 'Start Import'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

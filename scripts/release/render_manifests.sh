@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RELEASE_REPO="${RELEASE_REPO:-jd4rider/logos-releases}"
 
 fail() {
   printf '[release] %s\n' "$*" >&2
@@ -40,7 +41,7 @@ cask "logos-ai" do
   version "$VERSION"
   sha256 "$MACOS_SHA"
 
-  url "https://github.com/jd4rider/logos/releases/download/v#{version}/logos-ai-macos-universal.tar.gz"
+  url "https://github.com/$RELEASE_REPO/releases/download/v#{version}/logos-ai-macos-universal.tar.gz"
   name "Logos AI"
   desc "Bible study desktop app with bundled Logos CLI"
   homepage "https://logos-ai.online"
@@ -58,7 +59,7 @@ cat >"$ROOT_DIR/packaging/scoop/logos-ai.json" <<EOF
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/jd4rider/logos/releases/download/v$VERSION/logos-ai-windows-amd64-bundle.zip",
+      "url": "https://github.com/$RELEASE_REPO/releases/download/v$VERSION/logos-ai-windows-amd64-bundle.zip",
       "hash": "$WINDOWS_SHA",
       "bin": [
         "logos.exe"
@@ -74,4 +75,4 @@ cat >"$ROOT_DIR/packaging/scoop/logos-ai.json" <<EOF
 }
 EOF
 
-printf '[release] Updated Homebrew cask and Scoop manifest for %s\n' "$VERSION"
+printf '[release] Updated Homebrew cask and Scoop manifest for %s against %s\n' "$VERSION" "$RELEASE_REPO"

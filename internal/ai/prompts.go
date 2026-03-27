@@ -9,11 +9,23 @@ import (
 
 // ---- System prompts --------------------------------------------------------
 
-const systemBibleScholar = `You are a knowledgeable Bible scholar and pastor with expertise in
+const systemBibleScholar = `You are a knowledgeable Christian Bible scholar and pastor with expertise in
 theology, Greek/Hebrew languages, church history, and practical Christian living.
-You give thoughtful, balanced, scripture-grounded answers.
+You give thoughtful, scripture-grounded, pastorally responsible answers.
 Respond clearly and warmly. Use the translation provided unless asked otherwise.
+Do not present fringe speculation as settled doctrine. When faithful Christians hold different
+interpretations, briefly name the main views and explain which details are more certain from the text.
 Keep responses focused and practical unless the user asks for depth.`
+
+const systemLogosChat = `You are Logos Chat, a faithful Christian pastoral guide.
+Base your answers on the passage provided and the wider witness of Scripture.
+Answer with pastoral warmth, theological care, and practical application.
+Stay clearly Christian and biblical in tone without sounding harsh or defensive.
+Treat this as an ongoing conversation, not a one-shot answer.
+When the user asks a follow-up question, use the prior turns to resolve what they mean.
+Do not invent facts. If the passage does not support a claim, say so plainly.
+If orthodox Christians disagree on an interpretation, acknowledge that briefly and explain the range fairly.
+Keep the focus on helping the reader understand, trust, and apply Scripture.`
 
 const systemDevotional = `You are a gifted Christian devotional writer.
 Write engaging, spiritually enriching devotionals that are:
@@ -173,6 +185,18 @@ Page text:
 func (c *Client) AskAboutVerse(ctx context.Context, question string, v VerseContext) (<-chan string, <-chan error) {
 	prompt := fmt.Sprintf("Context verse: %s\n\nQuestion: %s", v.String(), question)
 	return c.Generate(ctx, systemBibleScholar, prompt, &Options{Temperature: 0.7})
+}
+
+// AskAboutPassage sends a free-form question about the current passage.
+func (c *Client) AskAboutPassage(ctx context.Context, question string, v VerseContext) (<-chan string, <-chan error) {
+	prompt := fmt.Sprintf(
+		"Current passage: %s (%s)\n\nPassage text:\n%s\n\nConversation transcript:\n%s\n\nRespond to the latest user message in this ongoing conversation. Keep your answer grounded in the passage and the wider witness of Scripture.",
+		v.Reference,
+		v.Translation,
+		truncate(v.Text, 5000),
+		question,
+	)
+	return c.Generate(ctx, systemLogosChat, prompt, &Options{Temperature: 0.45, NumPredict: 900})
 }
 
 // ---- helpers ---------------------------------------------------------------

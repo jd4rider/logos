@@ -181,7 +181,25 @@ INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 
 func (d *DB) migrate() error {
 	_, err := d.sql.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	return d.migrateColumns()
+}
+
+// migrateColumns adds any columns that may be missing from pre-existing DBs.
+func (d *DB) migrateColumns() error {
+	addCol := func(table, col, def string) {
+		// SQLite returns an error if the column already exists — we ignore it.
+		_, _ = d.sql.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + def)
+	}
+	addCol("ai_notes", "tts_cache_key", "TEXT NOT NULL DEFAULT ''")
+	addCol("ai_notes", "word_durations_ms", "TEXT NOT NULL DEFAULT '[]'")
+	addCol("devotionals", "tts_cache_key", "TEXT NOT NULL DEFAULT ''")
+	addCol("devotionals", "word_durations_ms", "TEXT NOT NULL DEFAULT '[]'")
+	addCol("sermons", "tts_cache_key", "TEXT NOT NULL DEFAULT ''")
+	addCol("sermons", "word_durations_ms", "TEXT NOT NULL DEFAULT '[]'")
+	return nil
 }
 
 // ── Translation CRUD ──────────────────────────────────────────────────────────
@@ -752,4 +770,43 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ── Library audio metadata ────────────────────────────────────────────────────
+
+// UpdateLibraryAudio stores TTS cache key and word durations for a library entry.
+func (d *DB) UpdateLibraryAudio(kind string, id int64, cacheKey, wordDurationsJSON string) error {
+	var table string
+	switch kind {
+	case "devotional":
+		table = "devotionals"
+	case "sermon":
+		table = "sermons"
+	default:
+		table = "ai_notes"
+	}
+	_, err := d.sql.Exec(
+		`UPDATE `+table+` SET tts_cache_key=?, word_durations_ms=?, audio_cached=1 WHERE id=?`,
+		cacheKey, wordDurationsJSON, id,
+	)
+	return err
+}
+
+// GetLibraryAudio returns the stored TTS cache key and word durations JSON for a library entry.
+// Returns empty strings if not set.
+func (d *DB) GetLibraryAudio(kind string, id int64) (cacheKey, wordDurationsJSON string, err error) {
+	var table string
+	switch kind {
+	case "devotional":
+		table = "devotionals"
+	case "sermon":
+		table = "sermons"
+	default:
+		table = "ai_notes"
+	}
+	row := d.sql.QueryRow(
+		`SELECT COALESCE(tts_cache_key,''), COALESCE(word_durations_ms,'[]') FROM `+table+` WHERE id=?`, id,
+	)
+	err = row.Scan(&cacheKey, &wordDurationsJSON)
+	return
 }

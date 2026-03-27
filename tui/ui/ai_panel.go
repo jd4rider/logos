@@ -36,7 +36,7 @@ const (
 type aiAction int
 
 const (
-	aiActionExplainVerse   aiAction = iota
+	aiActionExplainVerse aiAction = iota
 	aiActionExplainChapter
 	aiActionDevotional
 	aiActionSermon
@@ -61,10 +61,13 @@ var aiMenuItems = []struct {
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
-type aiTokenMsg        struct{ token string }
-type aiDoneMsg         struct{ err error }
-type aiSavedMsg        struct{ path string; err error }
-type libraryLoadedMsg  struct{ entries []libraryEntry }
+type aiTokenMsg struct{ token string }
+type aiDoneMsg struct{ err error }
+type aiSavedMsg struct {
+	path string
+	err  error
+}
+type libraryLoadedMsg struct{ entries []libraryEntry }
 
 type libraryEntry struct {
 	kind    string // "devotional" | "sermon" | "note"
@@ -141,19 +144,19 @@ func NewAIPanel(db *localdb.DB, aiClient *ai.Client) *AIPanel {
 }
 
 func (p *AIPanel) SetContext(verseRef, verseText, chapterText, bookName, chapterNum, translation string) {
-	p.verseRef    = verseRef
-	p.verseText   = verseText
+	p.verseRef = verseRef
+	p.verseText = verseText
 	p.chapterText = chapterText
-	p.bookName    = bookName
-	p.chapterNum  = chapterNum
+	p.bookName = bookName
+	p.chapterNum = chapterNum
 	p.translation = translation
 }
 
 func (p *AIPanel) SetSize(w, h int) {
-	p.width       = w
-	p.height      = h
-	p.vp.Width    = w - 4
-	p.vp.Height   = h - 12
+	p.width = w
+	p.height = h
+	p.vp.Width = w - 4
+	p.vp.Height = h - 12
 	p.input.SetWidth(w - 8)
 }
 
@@ -164,10 +167,10 @@ func (p *AIPanel) SetTTSEngine(engine *coretts.Engine) {
 }
 
 func (p *AIPanel) Reset() {
-	p.sub     = aiMenu
+	p.sub = aiMenu
 	p.menuIdx = 0
 	p.streamed.Reset()
-	p.err   = nil
+	p.err = nil
 	p.saved = ""
 	p.input.Reset()
 	p.stopStream()
@@ -293,8 +296,18 @@ func (p *AIPanel) Update(msg tea.Msg) (*AIPanel, tea.Cmd) {
 
 	case libraryLoadedMsg:
 		p.libraryItems = msg.entries
+		p.libraryIdx = 0
 		p.sub = aiResult
 		p.renderLibrary()
+		// Precache the first entry so "s" is instant
+		if len(msg.entries) > 0 && p.ttsEngine != nil && p.ttsEngine.Available() {
+			first := msg.entries[0]
+			go func() {
+				clean := coretts.CleanForTTS(first.content)
+				words := coretts.SplitWords(clean)
+				_ = p.ttsEngine.Precache(clean, words)
+			}()
+		}
 
 	case tea.KeyMsg:
 		switch p.sub {
@@ -356,6 +369,58 @@ func (p *AIPanel) handleTypingKey(msg tea.KeyMsg) (*AIPanel, tea.Cmd) {
 }
 
 func (p *AIPanel) handleResultKey(msg tea.KeyMsg) (*AIPanel, tea.Cmd) {
+	// Library navigation mode
+	if len(p.libraryItems) > 0 && p.streamed.Len() == 0 {
+		switch msg.String() {
+		case "esc", "backspace":
+			p.libraryItems = nil
+			p.sub = aiMenu
+			return p, nil
+		case "up", "k":
+			if p.libraryIdx > 0 {
+				p.libraryIdx--
+				p.renderLibrary()
+				// Precache selected entry in background for instant read
+				if p.ttsEngine != nil && p.ttsEngine.Available() {
+					entry := p.libraryItems[p.libraryIdx]
+					clean := coretts.CleanForTTS(entry.content)
+					words := coretts.SplitWords(clean)
+					go func() { _ = p.ttsEngine.Precache(clean, words) }()
+				}
+			}
+			return p, nil
+		case "down", "j":
+			if p.libraryIdx < len(p.libraryItems)-1 {
+				p.libraryIdx++
+				p.renderLibrary()
+				// Precache selected entry in background for instant read
+				if p.ttsEngine != nil && p.ttsEngine.Available() {
+					entry := p.libraryItems[p.libraryIdx]
+					clean := coretts.CleanForTTS(entry.content)
+					words := coretts.SplitWords(clean)
+					go func() { _ = p.ttsEngine.Precache(clean, words) }()
+				}
+			}
+			return p, nil
+		case "enter":
+			// Open entry: load its content into the streamed viewport
+			entry := p.libraryItems[p.libraryIdx]
+			p.libraryItems = nil
+			p.streamed.Reset()
+			p.streamed.WriteString(entry.content)
+			p.vp.SetContent(wrapText(entry.content, p.vp.Width))
+			return p, nil
+		case "s":
+			// Read selected library entry aloud
+			entry := p.libraryItems[p.libraryIdx]
+			text := strings.TrimSpace(entry.content)
+			if text != "" {
+				return p, func() tea.Msg { return aiReadAloudMsg{text: text} }
+			}
+		}
+		return p, nil
+	}
+
 	switch msg.String() {
 	case "esc", "backspace":
 		p.sub = aiMenu
@@ -430,7 +495,7 @@ func (p *AIPanel) beginStream(userInput string) tea.Cmd {
 	p.stopStream()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	p.cancel  = cancel
+	p.cancel = cancel
 	p.tokenCh = make(chan string, 128)
 
 	vc := ai.VerseContext{
@@ -439,11 +504,11 @@ func (p *AIPanel) beginStream(userInput string) tea.Cmd {
 		Translation: p.translation,
 	}
 
-	tokenCh     := p.tokenCh
-	action      := p.action
-	aiCl        := p.aiClient
-	bookName    := p.bookName
-	chapterNum  := p.chapterNum
+	tokenCh := p.tokenCh
+	action := p.action
+	aiCl := p.aiClient
+	bookName := p.bookName
+	chapterNum := p.chapterNum
 	chapterText := p.chapterText
 	translation := p.translation
 
@@ -451,7 +516,7 @@ func (p *AIPanel) beginStream(userInput string) tea.Cmd {
 		defer close(tokenCh)
 
 		var tokens <-chan string
-		var errc   <-chan error
+		var errc <-chan error
 
 		switch action {
 		case aiActionExplainVerse:
@@ -515,11 +580,11 @@ func (p *AIPanel) readNextToken() tea.Cmd {
 
 func (p *AIPanel) saveToLibraryCmd() tea.Cmd {
 	content := p.streamed.String()
-	db      := p.db
-	action  := p.action
-	vRef    := p.verseRef
-	trans   := p.translation
-	model   := ""
+	db := p.db
+	action := p.action
+	vRef := p.verseRef
+	trans := p.translation
+	model := ""
 	if p.aiClient != nil {
 		model = p.aiClient.Model()
 	}
@@ -553,17 +618,17 @@ func (p *AIPanel) saveToLibraryCmd() tea.Cmd {
 
 func (p *AIPanel) exportPDFCmd() tea.Cmd {
 	content := p.streamed.String()
-	action  := p.action
-	vRef    := p.verseRef
+	action := p.action
+	vRef := p.verseRef
 	home, _ := os.UserHomeDir()
-	outDir  := filepath.Join(home, "Desktop")
+	outDir := filepath.Join(home, "Desktop")
 	_ = os.MkdirAll(outDir, 0o755)
 
 	return func() tea.Msg {
-		ts    := time.Now().Format("20060102-150405")
+		ts := time.Now().Format("20060102-150405")
 		title := extractFirstLine(content)
 		var outPath string
-		var err     error
+		var err error
 
 		switch action {
 		case aiActionDevotional:
@@ -680,8 +745,8 @@ func (p *AIPanel) panelStyles() panelStyleSet {
 
 func (p *AIPanel) panelHeader(st panelStyleSet, subtitle string) string {
 	title := st.title.Render("✝  Logos AI Assistant")
-	sub   := st.hint.Render(subtitle)
-	ctx   := ""
+	sub := st.hint.Render(subtitle)
+	ctx := ""
 	if p.verseRef != "" {
 		ctx = st.gold.Render("  Context: ") + st.hint.Render(p.verseRef)
 	}

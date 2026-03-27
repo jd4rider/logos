@@ -300,3 +300,53 @@ export namespace api {
 
 }
 
+export namespace main {
+	
+	export class LibraryEntry {
+	    kind: string;
+	    id: number;
+	    title: string;
+	    ref: string;
+	    content: string;
+	    model: string;
+	    date: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.ref = source["ref"];
+	        this.content = source["content"];
+	        this.model = source["model"];
+	        this.date = source["date"];
+	    }
+	}
+
+}
+
+export namespace tts {
+	
+	export class VoiceEntry {
+	    Name: string;
+	    ID: string;
+	    Engine: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VoiceEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Name = source["Name"];
+	        this.ID = source["ID"];
+	        this.Engine = source["Engine"];
+	    }
+	}
+
+}
+
