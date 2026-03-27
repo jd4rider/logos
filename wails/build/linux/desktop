@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Logos AI
+Comment=AI-assisted Bible study desktop reader
+# The Exec line includes %u to pass the URL to the application
+Exec=/opt/logos-ai/logos-ai %u
+Terminal=false
+Type=Application
+Icon=logos-ai
+Categories=Education;Office;Utility;
+StartupWMClass=logos-ai
+
+ 

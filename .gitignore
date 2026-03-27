@@ -3,4 +3,6 @@
 **/dist/
 **/*.sum
 go.work.sum
-wails/build/
+wails/bin/
+wails/.task/
+wails/frontend/tsconfig.tsbuildinfo
