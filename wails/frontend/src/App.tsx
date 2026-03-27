@@ -7,6 +7,7 @@ import SearchPanel from './components/SearchPanel';
 import TTSBar from './components/TTSBar';
 import AIPanel from './components/AIPanel';
 import ImporterModal from './components/ImporterModal';
+import { languageLabel, languageOptions } from './lib/languages';
 
 const dragRegion = { WebkitAppRegion: 'drag' } as unknown as CSSProperties;
 const noDragRegion = { WebkitAppRegion: 'no-drag' } as unknown as CSSProperties;
@@ -57,6 +58,7 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState('eng');
   const [activeWordIndex, setActiveWordIndex] = useState(-1);
   const [verseJumpTarget, setVerseJumpTarget] = useState<string | null>(null);
   const [verseJumpToken, setVerseJumpToken] = useState(0);
@@ -69,11 +71,23 @@ export default function App() {
   const comparisonBooksRef = useRef<Record<string, Book[]>>({});
   const comparisonChaptersRef = useRef<Record<string, Chapter[]>>({});
 
-  async function loadBibles() {
+  async function loadBibles(language = selectedLanguage) {
     setBusyLabel('Loading translations');
     try {
-      const nextBibles = (await LogosService.GetBibles('eng')) as BibleSummary[];
+      const nextBibles = (await LogosService.GetBibles(language)) as BibleSummary[];
       setBibles(nextBibles);
+      if (currentBible && !nextBibles.some((bible) => bible.id === currentBible.id)) {
+        setCurrentBible(null);
+        setCurrentBook(null);
+        setCurrentChapter(null);
+        setSearchResults(null);
+        setSearchOpen(false);
+        setBooks([]);
+        setChapters([]);
+        setParallelChapter(null);
+        setParallelError(null);
+        setParallelOpen(false);
+      }
     } catch (loadError) {
       setError(explainError(loadError));
     } finally {
@@ -82,8 +96,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    void loadBibles();
-  }, []);
+    void loadBibles(selectedLanguage);
+  }, [selectedLanguage]);
 
   useEffect(() => {
     if (!currentBible) {
@@ -123,6 +137,10 @@ export default function App() {
     } finally {
       setBusyLabel('');
     }
+  }
+
+  function handleLanguageChange(language: string) {
+    setSelectedLanguage(language);
   }
 
   async function selectBook(book: Book) {
@@ -574,9 +592,12 @@ export default function App() {
           books={books}
           chapters={chapters}
           loading={Boolean(busyLabel)}
+          selectedLanguage={selectedLanguage}
+          languageOptions={languageOptions}
           currentBibleId={currentBible?.id}
           currentBookId={currentBook?.id}
           currentChapterId={currentChapter?.id}
+          onLanguageChange={handleLanguageChange}
           onSelectBible={selectBible}
           onSelectBook={selectBook}
           onSelectChapter={(chapter) => void loadChapter(chapter.id)}
@@ -676,6 +697,10 @@ export default function App() {
                       <div className="text-xs uppercase tracking-[0.22em] text-muted">Activity</div>
                       <div className="mt-1 text-sm text-text">{busyLabel || 'Ready'}</div>
                     </div>
+                    <div className="rounded-[1.35rem] border border-border bg-surface/70 px-4 py-3">
+                      <div className="text-xs uppercase tracking-[0.22em] text-muted">Language Filter</div>
+                      <div className="mt-1 text-sm text-text">{languageLabel(selectedLanguage)}</div>
+                    </div>
                     {currentBible && (
                       <div className="rounded-[1.35rem] border border-border bg-surface/70 px-4 py-3">
                         <div className="text-xs uppercase tracking-[0.22em] text-muted">Translation</div>
@@ -719,7 +744,7 @@ export default function App() {
       {importOpen && (
         <ImporterModal
           onClose={() => setImportOpen(false)}
-          onImported={() => void loadBibles()}
+          onImported={() => void loadBibles(selectedLanguage)}
         />
       )}
     </div>

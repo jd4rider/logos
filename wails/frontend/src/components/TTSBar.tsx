@@ -393,7 +393,8 @@ export default function TTSBar({
           <div className="text-xs uppercase tracking-[0.22em] text-gold">Voice Quality Tip</div>
           <p className="mt-2 text-sm leading-7 text-text">
             You are using a built-in fallback voice. It works, but Kokoro usually sounds much better for longer Bible
-            reading and Piper is the next best local option.
+            reading and Piper is the next best local option. English is the strongest path today, while other
+            languages depend on matching Piper voices or voices already installed in the operating system.
           </p>
           <button
             type="button"

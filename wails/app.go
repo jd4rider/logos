@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jd4rider/logos/internal/api"
+	"github.com/jd4rider/logos/internal/biblemeta"
 	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/tts"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -90,7 +91,7 @@ func (s *LogosService) GetBibles(language string) ([]BibleSummary, error) {
 	seenAbbr := map[string]bool{}
 	var items []BibleSummary
 
-	for _, local := range s.localBibleSummaries() {
+	for _, local := range s.localBibleSummaries(language) {
 		normAbbr := strings.ToUpper(stripLangPrefix(local.Abbreviation))
 		items = append(items, local)
 		seenID[local.ID] = true
@@ -358,7 +359,7 @@ func (s *LogosService) IsSpeaking() bool {
 
 // ── local helpers ────────────────────────────────────────────────────────────
 
-func (s *LogosService) localBibleSummaries() []BibleSummary {
+func (s *LogosService) localBibleSummaries(language string) []BibleSummary {
 	if s.localDB == nil {
 		return nil
 	}
@@ -368,6 +369,9 @@ func (s *LogosService) localBibleSummaries() []BibleSummary {
 	}
 	result := make([]BibleSummary, 0, len(translations))
 	for _, translation := range translations {
+		if !biblemeta.MatchesLanguage(translation.Language, language) {
+			continue
+		}
 		description := strings.TrimSpace(translation.Description)
 		if description == "" {
 			description = "Offline import"
@@ -425,7 +429,7 @@ func (s *LogosService) loadLocalChapter(bibleID, chapterID string) (api.ChapterC
 			}
 		}
 	}
-	for _, translation := range s.localBibleSummaries() {
+	for _, translation := range s.localBibleSummaries("") {
 		if translation.ID == bibleID {
 			translationName = translation.Name
 			break
@@ -492,65 +496,15 @@ func makeVoiceOption(voice tts.VoiceEntry) VoiceOption {
 }
 
 func stripLangPrefix(abbr string) string {
-	known3 := []string{"eng", "spa", "esp", "fra", "deu", "ger", "por", "zho", "hin", "ara", "rus", "kor", "jpn", "vie", "ind", "nld", "ita", "pol", "tur", "heb", "grc", "lat", "afr", "swa", "urd", "ben", "tam"}
-	lower := strings.ToLower(abbr)
-	for _, pfx := range known3 {
-		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
-			return abbr[len(pfx):]
-		}
-	}
-	known2 := []string{"en", "es", "fr", "de", "pt", "it", "nl", "pl"}
-	for _, pfx := range known2 {
-		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
-			next := abbr[len(pfx)]
-			if next >= 'A' && next <= 'Z' {
-				return abbr[len(pfx):]
-			}
-		}
-	}
-	return abbr
+	return biblemeta.StripLangPrefix(abbr)
 }
 
 func displayBibleAbbreviation(abbr string) string {
-	trimmed := stripLangPrefix(strings.TrimSpace(abbr))
-	if trimmed == "" {
-		return strings.TrimSpace(abbr)
-	}
-	return trimmed
+	return biblemeta.DisplayBibleAbbreviation(abbr)
 }
 
 func displayLanguageName(code string) string {
-	mapping := map[string]string{
-		"eng": "English", "en": "English",
-		"spa": "Spanish", "es": "Spanish", "esp": "Spanish",
-		"fra": "French", "fr": "French",
-		"deu": "German", "ger": "German", "de": "German",
-		"ita": "Italian", "it": "Italian",
-		"por": "Portuguese", "pt": "Portuguese",
-		"nld": "Dutch", "nl": "Dutch",
-		"pol": "Polish", "pl": "Polish",
-		"rus": "Russian", "ru": "Russian",
-		"zho": "Chinese", "zh": "Chinese",
-		"hin": "Hindi", "hi": "Hindi",
-		"ara": "Arabic", "ar": "Arabic",
-		"kor": "Korean", "ko": "Korean",
-		"jpn": "Japanese", "ja": "Japanese",
-		"vie": "Vietnamese", "vi": "Vietnamese",
-		"ind": "Indonesian", "id": "Indonesian",
-		"tur": "Turkish", "tr": "Turkish",
-		"swa": "Swahili", "sw": "Swahili",
-		"urd": "Urdu", "ur": "Urdu",
-		"ben": "Bengali", "bn": "Bengali",
-		"tam": "Tamil", "ta": "Tamil",
-		"afr": "Afrikaans",
-		"lat": "Latin",
-		"grc": "Greek (Ancient)",
-		"heb": "Hebrew",
-	}
-	if name, ok := mapping[strings.ToLower(strings.TrimSpace(code))]; ok {
-		return name
-	}
-	return code
+	return biblemeta.DisplayLanguageName(code)
 }
 
 func formatLocalReference(verseID string) string {

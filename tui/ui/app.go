@@ -11,6 +11,7 @@ import (
 
 	"github.com/jd4rider/logos/internal/ai"
 	"github.com/jd4rider/logos/internal/api"
+	"github.com/jd4rider/logos/internal/biblemeta"
 	localdb "github.com/jd4rider/logos/internal/db"
 	"github.com/jd4rider/logos/internal/precache"
 	coretts "github.com/jd4rider/logos/internal/tts"
@@ -36,6 +37,7 @@ const (
 	StateReader
 	StateSearch
 	StateVoicePicker
+	StateLanguagePicker
 	StateImport
 	StateAI
 )
@@ -86,7 +88,7 @@ func (i bibleItem) Title() string {
 	if i.offline {
 		prefix = "📦 "
 	}
-	return prefix + fmt.Sprintf("%-8s %s", stripEngPrefix(i.b.Abbreviation), i.b.Name)
+	return prefix + fmt.Sprintf("%-8s %s", biblemeta.DisplayBibleAbbreviation(i.b.Abbreviation), i.b.Name)
 }
 func (i bibleItem) Description() string {
 	if i.offline {
@@ -120,6 +122,20 @@ func (i searchItem) Description() string {
 	return i.v.Text
 }
 func (i searchItem) FilterValue() string { return i.v.Reference + " " + i.v.Text }
+
+type languageItem struct {
+	code string
+	name string
+}
+
+func (i languageItem) Title() string { return i.name }
+func (i languageItem) Description() string {
+	if i.code == "" {
+		return "Show every available translation."
+	}
+	return "Filter the library to " + i.name + " translations."
+}
+func (i languageItem) FilterValue() string { return i.name + " " + i.code }
 
 type voiceItem struct{ entry coretts.VoiceEntry }
 
@@ -162,16 +178,18 @@ type Model struct {
 	selectedBibleOffline bool
 	selectedBook         api.Book
 	currentChapter       api.ChapterContent
+	languageFilter       string
 
 	// Bubbles
-	bibleList   list.Model
-	bookList    list.Model
-	chapterList list.Model
-	searchList  list.Model
-	voiceList   list.Model
-	viewport    viewport.Model
-	searchInput textinput.Model
-	spinner     spinner.Model
+	bibleList    list.Model
+	bookList     list.Model
+	chapterList  list.Model
+	searchList   list.Model
+	voiceList    list.Model
+	languageList list.Model
+	viewport     viewport.Model
+	searchInput  textinput.Model
+	spinner      spinner.Model
 
 	// Import panel
 	importPanel *ImportPanel
@@ -213,22 +231,24 @@ func NewModel(client *api.Client, ttsEngine *coretts.Engine, initialBibleID stri
 	si.TextStyle = lipgloss.NewStyle().Foreground(ColorText)
 
 	m := Model{
-		state:         StateLoading,
-		client:        client,
-		tts:           ttsEngine,
-		styles:        styles,
-		keys:          keys,
-		spinner:       sp,
-		searchInput:   si,
-		loading:       true,
-		selectedBible: api.Bible{ID: initialBibleID},
-		ttsWordIndex:  -1,
+		state:          StateLoading,
+		client:         client,
+		tts:            ttsEngine,
+		styles:         styles,
+		keys:           keys,
+		spinner:        sp,
+		searchInput:    si,
+		loading:        true,
+		languageFilter: "eng",
+		selectedBible:  api.Bible{ID: initialBibleID},
+		ttsWordIndex:   -1,
 		// Pre-init all lists so SetSize never hits a zero-value struct
-		bibleList:   newStyledList([]list.Item{}, "✝  Select Translation", 80, 24),
-		bookList:    newStyledList([]list.Item{}, "✝  Select Book", 80, 24),
-		chapterList: newStyledList([]list.Item{}, "✝  Select Chapter", 80, 24),
-		searchList:  newStyledList([]list.Item{}, "✝  Search Results", 80, 24),
-		voiceList:   newStyledList([]list.Item{}, "✝  Select Voice", 80, 24),
+		bibleList:    newStyledList([]list.Item{}, "✝  Select Translation", 80, 24),
+		bookList:     newStyledList([]list.Item{}, "✝  Select Book", 80, 24),
+		chapterList:  newStyledList([]list.Item{}, "✝  Select Chapter", 80, 24),
+		searchList:   newStyledList([]list.Item{}, "✝  Search Results", 80, 24),
+		voiceList:    newStyledList([]list.Item{}, "✝  Select Voice", 80, 24),
+		languageList: newStyledList([]list.Item{}, "✝  Filter Language", 80, 24),
 	}
 	// Open local SQLite db (best-effort — TUI still works without it)
 	if ldb, err := localdb.Open(localdb.DefaultDBPath()); err == nil {
@@ -246,8 +266,9 @@ func (m Model) Init() tea.Cmd {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 func (m Model) cmdLoadBibles() tea.Cmd {
+	filter := m.languageFilter
 	return func() tea.Msg {
-		apiBibles, apiErr := m.client.GetBibles("eng")
+		apiBibles, apiErr := m.client.GetBibles(filter)
 
 		// Build a merged, alphabetically-sorted list.
 		// Local (offline) entries win over API entries with the same abbreviation
@@ -260,12 +281,15 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 		if m.localDB != nil {
 			if locals, err := m.localDB.ListTranslations(); err == nil {
 				for _, t := range locals {
+					if !biblemeta.MatchesLanguage(t.Language, filter) {
+						continue
+					}
 					normAbbr := strings.ToUpper(stripLangPrefix(t.Abbreviation))
 					items = append(items, bibleItem{
 						b: api.Bible{
 							ID:           t.ID,
 							Name:         t.Name,
-							Abbreviation: t.Abbreviation,
+							Abbreviation: biblemeta.DisplayBibleAbbreviation(t.Abbreviation),
 							Language: api.Language{
 								ID:        t.Language,
 								Name:      displayLanguageName(t.Language),
@@ -291,6 +315,7 @@ func (m Model) cmdLoadBibles() tea.Cmd {
 					// local version exists — skip the API copy to avoid 403
 					continue
 				}
+				b.Abbreviation = biblemeta.DisplayBibleAbbreviation(b.Abbreviation)
 				items = append(items, bibleItem{b: b, offline: false})
 				seenID[b.ID] = true
 				seenAbbr[normAbbr] = true
@@ -480,6 +505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chapterList.SetSize(msg.Width, h)
 		m.searchList.SetSize(msg.Width, h)
 		m.voiceList.SetSize(msg.Width, h)
+		m.languageList.SetSize(msg.Width, h)
 		if m.state == StateReader {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = h
@@ -510,17 +536,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			offline := i < len(msg.offlineFlags) && msg.offlineFlags[i]
 			items[i] = bibleItem{b: b, offline: offline}
 		}
-		title := "✝  Select Translation"
+		title := "✝  Select Translation  [" + m.languageFilterLabel() + "]"
 		if msg.offline {
-			title = "✝  Select Translation  [offline mode]"
+			title += "  [offline mode]"
 		}
 		m.bibleList = newStyledList(items, title, m.width, m.contentHeight())
+		foundSelected := false
 		for idx, b := range msg.bibles {
 			if b.ID == m.selectedBible.ID {
 				m.selectedBibleOffline = idx < len(msg.offlineFlags) && msg.offlineFlags[idx]
 				m.bibleList.Select(idx)
+				foundSelected = true
 				break
 			}
+		}
+		if !foundSelected {
+			m.selectedBible = api.Bible{}
+			m.selectedBibleOffline = false
+			m.selectedBook = api.Book{}
+			m.currentChapter = api.ChapterContent{}
 		}
 		m.state = StateBibles
 		return m, nil
@@ -531,7 +565,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, b := range msg.books {
 			items[i] = bookItem{b}
 		}
-		m.bookList = newStyledList(items, "✝  "+m.selectedBible.Abbreviation+"  ›  Select Book", m.width, m.contentHeight())
+		m.bookList = newStyledList(items, "✝  "+biblemeta.DisplayBibleAbbreviation(m.selectedBible.Abbreviation)+"  ›  Select Book", m.width, m.contentHeight())
 		m.state = StateBooks
 		return m, nil
 
@@ -541,7 +575,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, c := range msg.chapters {
 			items[i] = chapterItem{c}
 		}
-		m.chapterList = newStyledList(items, "✝  "+m.selectedBible.Abbreviation+"  ›  "+m.selectedBook.Name, m.width, m.contentHeight())
+		m.chapterList = newStyledList(items, "✝  "+biblemeta.DisplayBibleAbbreviation(m.selectedBible.Abbreviation)+"  ›  "+m.selectedBook.Name, m.width, m.contentHeight())
 		m.state = StateChapters
 		return m, nil
 
@@ -751,6 +785,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.state = StateLoading
 				return m, tea.Batch(m.spinner.Tick, m.cmdLoadBooks())
 			}
+		case "f", "F":
+			return m.openLanguagePicker()
 		case "i", "I":
 			// Open import panel
 			if m.importPanel == nil {
@@ -776,6 +812,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.state = StateLoading
 			return m, tea.Batch(m.spinner.Tick, m.cmdLoadBibles())
+		case "f", "F":
+			return m.openLanguagePicker()
 		case "/":
 			return m.openSearch()
 		}
@@ -791,6 +829,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "backspace":
 			m.state = StateBooks
 			return m, nil
+		case "f", "F":
+			return m.openLanguagePicker()
 		case "/":
 			return m.openSearch()
 		}
@@ -900,6 +940,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.tts.SetVoiceEntry(item.entry)
 				}
 				m.state = m.prevState
+			}
+		}
+
+	case StateLanguagePicker:
+		switch msg.String() {
+		case "esc", "backspace":
+			m.state = m.prevState
+			return m, nil
+		case "enter", "right", "l":
+			if item, ok := m.languageList.SelectedItem().(languageItem); ok {
+				m.languageFilter = item.code
+				m.loading = true
+				m.selectedBook = api.Book{}
+				m.currentChapter = api.ChapterContent{}
+				m.state = StateLoading
+				return m, tea.Batch(m.spinner.Tick, m.cmdLoadBibles())
 			}
 		}
 
@@ -1130,6 +1186,24 @@ func (m Model) openVoicePicker() (Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) openLanguagePicker() (Model, tea.Cmd) {
+	options := biblemeta.CommonLanguageOptions()
+	items := make([]list.Item, len(options))
+	for i, option := range options {
+		items[i] = languageItem{code: option.Code, name: option.Name}
+	}
+	m.languageList = newStyledList(items, "✝  Filter Translation Language", m.width, m.contentHeight())
+	for idx, option := range options {
+		if option.Code == m.languageFilter {
+			m.languageList.Select(idx)
+			break
+		}
+	}
+	m.prevState = m.state
+	m.state = StateLanguagePicker
+	return m, nil
+}
+
 func (m Model) openAIPanel() (Model, tea.Cmd) {
 	if m.aiPanel == nil {
 		m.aiPanel = NewAIPanel(m.localDB, m.aiClient)
@@ -1168,6 +1242,13 @@ func (m Model) openAIPanel() (Model, tea.Cmd) {
 	return m, m.aiPanel.Init()
 }
 
+func (m Model) languageFilterLabel() string {
+	if strings.TrimSpace(m.languageFilter) == "" {
+		return "All languages"
+	}
+	return biblemeta.DisplayLanguageName(m.languageFilter)
+}
+
 func (m Model) updateActiveComponent(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.state {
@@ -1183,6 +1264,8 @@ func (m Model) updateActiveComponent(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchList, cmd = m.searchList.Update(msg)
 	case StateVoicePicker:
 		m.voiceList, cmd = m.voiceList.Update(msg)
+	case StateLanguagePicker:
+		m.languageList, cmd = m.languageList.Update(msg)
 		// StateImport is handled directly in the key handler above
 	}
 	return m, cmd
@@ -1223,6 +1306,9 @@ func (m Model) View() string {
 	case StateVoicePicker:
 		m.voiceList.SetSize(m.width, h)
 		body = m.voiceList.View()
+	case StateLanguagePicker:
+		m.languageList.SetSize(m.width, h)
+		body = m.languageList.View()
 	case StateImport:
 		if m.importPanel != nil {
 			m.importPanel.SetSize(m.width, h)
@@ -1261,6 +1347,9 @@ func (m Model) renderHeader() string {
 	title := m.styles.HeaderTitle.Render("✝  LOGOS AI")
 
 	var crumbs []string
+	if m.selectedBible.Abbreviation == "" && m.languageFilterLabel() != "" {
+		crumbs = append(crumbs, m.languageFilterLabel())
+	}
 	if m.selectedBible.Abbreviation != "" {
 		crumbs = append(crumbs, stripEngPrefix(m.selectedBible.Abbreviation))
 	}
@@ -1304,11 +1393,11 @@ func (m Model) renderFooter() string {
 	case StateLoading:
 		hints = "loading…"
 	case StateBibles:
-		hints = "↑↓ navigate  •  enter select  •  i import  •  / search  •  q quit"
+		hints = "↑↓ navigate  •  enter select  •  f language  •  i import  •  / search  •  q quit"
 	case StateBooks:
-		hints = "↑↓ navigate  •  enter select  •  esc back  •  / search  •  q quit"
+		hints = "↑↓ navigate  •  enter select  •  f language  •  esc back  •  / search  •  q quit"
 	case StateChapters:
-		hints = "↑↓ navigate  •  enter select  •  esc back  •  / search  •  q quit"
+		hints = "↑↓ navigate  •  enter select  •  f language  •  esc back  •  / search  •  q quit"
 	case StateReader:
 		if m.ttsSpeaking && m.ttsPaused {
 			hints = "↑↓ scroll  •  space resume  •  S stop  •  click jump  •  a AI  •  v voice  •  n/[ ch  •  esc back  •  q quit"
@@ -1321,6 +1410,8 @@ func (m Model) renderFooter() string {
 		hints = "↑↓ navigate  •  enter open  •  / new search  •  esc back  •  q quit"
 	case StateVoicePicker:
 		hints = "↑↓ navigate  •  enter select voice  •  esc cancel"
+	case StateLanguagePicker:
+		hints = "↑↓ navigate  •  enter choose language  •  esc cancel"
 	case StateImport:
 		if m.importPanel != nil {
 			hints = m.importPanel.Hints()
@@ -1524,33 +1615,7 @@ func (m Model) loadOfflineChapter(chapterID string) (api.ChapterContent, error) 
 //	"KJV"     → "KJV"  (unchanged)
 //	"NLV"     → "NLV"  (not touched — result would be single char)
 func stripLangPrefix(abbr string) string {
-	known3 := []string{
-		"eng", "spa", "esp", "fra", "deu", "ger", "por", "zho", "hin",
-		"ara", "rus", "kor", "jpn", "vie", "ind", "nld", "ita", "pol",
-		"tur", "heb", "grc", "lat", "afr", "swa", "urd", "ben", "tam",
-	}
-	lower := strings.ToLower(abbr)
-	for _, pfx := range known3 {
-		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
-			result := abbr[len(pfx):]
-			// Only strip if the result is at least 2 characters
-			if len(result) >= 2 {
-				return result
-			}
-		}
-	}
-	known2 := []string{"en", "es", "fr", "de", "pt", "it", "nl", "pl"}
-	for _, pfx := range known2 {
-		if strings.HasPrefix(lower, pfx) && len(abbr) > len(pfx) {
-			// Only strip if next char is uppercase (e.g. "enWEB" not "enjoy")
-			// AND result is at least 2 characters
-			result := abbr[len(pfx):]
-			if len(result) >= 2 && result[0] >= 'A' && result[0] <= 'Z' {
-				return result
-			}
-		}
-	}
-	return abbr
+	return biblemeta.StripLangPrefix(abbr)
 }
 
 // stripEngPrefix is kept for backwards compat; delegates to stripLangPrefix.
@@ -1558,37 +1623,7 @@ func stripEngPrefix(abbr string) string { return stripLangPrefix(abbr) }
 
 // displayLanguageName maps ISO-639-3/1 codes to English display names.
 func displayLanguageName(code string) string {
-	m := map[string]string{
-		"eng": "English", "en": "English",
-		"spa": "Spanish", "es": "Spanish", "esp": "Spanish",
-		"fra": "French", "fr": "French",
-		"deu": "German", "ger": "German", "de": "German",
-		"ita": "Italian", "it": "Italian",
-		"por": "Portuguese", "pt": "Portuguese",
-		"nld": "Dutch", "nl": "Dutch",
-		"pol": "Polish", "pl": "Polish",
-		"rus": "Russian", "ru": "Russian",
-		"zho": "Chinese", "zh": "Chinese",
-		"hin": "Hindi", "hi": "Hindi",
-		"ara": "Arabic", "ar": "Arabic",
-		"kor": "Korean", "ko": "Korean",
-		"jpn": "Japanese", "ja": "Japanese",
-		"vie": "Vietnamese", "vi": "Vietnamese",
-		"ind": "Indonesian", "id": "Indonesian",
-		"tur": "Turkish", "tr": "Turkish",
-		"swa": "Swahili", "sw": "Swahili",
-		"urd": "Urdu", "ur": "Urdu",
-		"ben": "Bengali", "bn": "Bengali",
-		"tam": "Tamil", "ta": "Tamil",
-		"afr": "Afrikaans",
-		"lat": "Latin",
-		"grc": "Greek (Ancient)",
-		"heb": "Hebrew",
-	}
-	if name, ok := m[strings.ToLower(strings.TrimSpace(code))]; ok {
-		return name
-	}
-	return code
+	return biblemeta.DisplayLanguageName(code)
 }
 
 func formatLocalReference(verseID string) string {
