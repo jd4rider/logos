@@ -1,0 +1,21 @@
+{
+  "version": "0.0.0",
+  "description": "Bible study desktop app with bundled Logos CLI.",
+  "homepage": "https://logos-ai.online",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/jd4rider/logos/releases/download/v0.0.0/logos-ai-windows-amd64-bundle.zip",
+      "hash": "REPLACE_WITH_RELEASE_SHA256",
+      "bin": [
+        "logos.exe"
+      ],
+      "shortcuts": [
+        [
+          "logos-ai.exe",
+          "Logos AI"
+        ]
+      ]
+    }
+  }
+}

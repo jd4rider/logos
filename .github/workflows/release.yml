@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wails/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Build macOS pkg
+        run: bash scripts/release/build_macos_pkg.sh
+        env:
+          VERSION: ${{ github.ref_name }}
+
+      - name: Create macOS bundle archive
+        run: |
+          tar -czf wails/bin/logos-ai-macos-universal.tar.gz -C wails/bin logos-ai.app logos
+
+      - name: Upload macOS assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wails/bin/logos-ai-macos-universal.pkg
+            wails/bin/logos-ai-macos-universal.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wails/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Build bundled CLI
+        shell: bash
+        run: bash scripts/release/build_cli.sh wails/bin/logos.exe windows amd64
+
+      - name: Build Windows installer
+        shell: bash
+        run: |
+          cd wails
+          wails3 task windows:create:nsis:installer ARCH=amd64
+
+      - name: Rename installer
+        shell: bash
+        run: mv wails/bin/logos-ai-amd64-installer.exe wails/bin/logos-ai-windows-amd64-installer.exe
+
+      - name: Create Windows bundle archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path wails/bin/logos-ai.exe,wails/bin/logos.exe -DestinationPath wails/bin/logos-ai-windows-amd64-bundle.zip -Force
+
+      - name: Upload Windows assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wails/bin/logos-ai-windows-amd64-bundle.zip
+            wails/bin/logos-ai-windows-amd64-installer.exe
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wails/frontend/package-lock.json
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev patchelf fakeroot rpm
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+      - name: Build bundled CLI
+        run: bash scripts/release/build_cli.sh wails/bin/logos linux amd64
+
+      - name: Build Linux packages
+        run: |
+          cd wails
+          VERSION="${GITHUB_REF_NAME#v}" wails3 task linux:create:deb ARCH=amd64
+          wails3 task linux:create:appimage ARCH=amd64
+
+      - name: Create Linux bundle archive
+        run: |
+          tar -czf wails/bin/logos-ai-linux-amd64-bundle.tar.gz -C wails/bin logos-ai logos
+
+      - name: Upload Linux assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wails/bin/*.deb
+            wails/bin/*.AppImage
+            wails/bin/logos-ai-linux-amd64-bundle.tar.gz
