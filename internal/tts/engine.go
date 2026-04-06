@@ -6,11 +6,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jd4rider/logos/internal/appenv"
 )
 
 // VoiceEntry describes a single selectable voice.
@@ -63,12 +66,11 @@ func NewWithConfig(cfg Config) *Engine {
 		rate = 150
 	}
 
-	home, _ := os.UserHomeDir()
 	e := &Engine{
 		rate:         rate,
 		piperModel:   cfg.PiperModel,
-		kokoroModel:  home + "/.local/share/kokoro/kokoro-v1.0.onnx",
-		kokoroVoices: home + "/.local/share/kokoro/voices-v1.0.bin",
+		kokoroModel:  filepath.Join(appenv.KokoroDir(), "kokoro-v1.0.onnx"),
+		kokoroVoices: filepath.Join(appenv.KokoroDir(), "voices-v1.0.bin"),
 		cache:        NewAudioCache(),
 	}
 
@@ -128,8 +130,7 @@ func (e *Engine) listPiperVoices() []VoiceEntry {
 	if _, err := exec.LookPath("piper"); err != nil {
 		return nil
 	}
-	home, _ := os.UserHomeDir()
-	piperDir := home + "/.local/share/piper"
+	piperDir := appenv.PiperDir()
 	entries, err := os.ReadDir(piperDir)
 	if err != nil {
 		if e.piperModel != "" {
@@ -140,7 +141,7 @@ func (e *Engine) listPiperVoices() []VoiceEntry {
 	var voices []VoiceEntry
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".onnx") {
-			path := piperDir + "/" + entry.Name()
+			path := filepath.Join(piperDir, entry.Name())
 			voices = append(voices, VoiceEntry{
 				Name:   "Piper: " + strings.TrimSuffix(entry.Name(), ".onnx"),
 				ID:     path,
@@ -202,11 +203,7 @@ func (e *Engine) listSayVoices() []VoiceEntry {
 }
 
 func modelShortName(path string) string {
-	base := path
-	if idx := strings.LastIndex(base, "/"); idx >= 0 {
-		base = base[idx+1:]
-	}
-	return strings.TrimSuffix(base, ".onnx")
+	return strings.TrimSuffix(filepath.Base(path), ".onnx")
 }
 
 func extractVoiceName(line string) string {
@@ -233,6 +230,37 @@ func (e *Engine) IsPlaying() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.playing
+}
+
+func (e *Engine) RefreshVoices() []VoiceEntry {
+	voices := e.ListVoices()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if len(voices) == 0 {
+		e.activeVoice = VoiceEntry{}
+		e.activeEngine = "none"
+		return voices
+	}
+
+	for _, voice := range voices {
+		if voice.ID == e.activeVoice.ID && voice.Engine == e.activeVoice.Engine {
+			e.activeVoice = voice
+			e.activeEngine = voice.Engine
+			if voice.Engine == "piper" {
+				e.piperModel = voice.ID
+			}
+			return voices
+		}
+	}
+
+	e.activeVoice = voices[0]
+	e.activeEngine = voices[0].Engine
+	if voices[0].Engine == "piper" {
+		e.piperModel = voices[0].ID
+	}
+	return voices
 }
 
 func (e *Engine) SetVoiceEntry(v VoiceEntry) {

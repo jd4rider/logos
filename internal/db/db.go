@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jd4rider/logos/internal/appenv"
 	_ "modernc.org/sqlite"
 )
 
-// DefaultDBPath returns ~/.local/share/logos/bibles.db
+// DefaultDBPath returns the per-user SQLite database path for Logos AI.
 func DefaultDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "logos", "bibles.db")
+	return filepath.Join(appenv.DataDir(), "bibles.db")
 }
 
 // DB wraps a SQLite connection with Bible-specific helpers.

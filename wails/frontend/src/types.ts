@@ -90,6 +90,17 @@ export interface SyncedSpeechPlan {
   wordDurationsMs: number[];
 }
 
+export interface LocalSetupStatus {
+  needsSetup: boolean;
+  pythonReady: boolean;
+  piperReady: boolean;
+  kokoroReady: boolean;
+  ollamaInstalled: boolean;
+  ollamaRunning: boolean;
+  chatModel: string;
+  embedModel: string;
+}
+
 export interface LibraryEntry {
   kind: string;
   id: number;

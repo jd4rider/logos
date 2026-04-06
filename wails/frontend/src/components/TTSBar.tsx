@@ -4,6 +4,7 @@ import { BrowserOpenURL } from '../../wailsjs/runtime/runtime';
 import { LogosService } from '../bindings';
 import { findVerseForWordIndex, parseVerseSpeechSegments } from '../chapterSpeech';
 import type { ChapterContent, SpeechSettings, VoiceOption } from '../types';
+import LocalSetupCard from './LocalSetupCard';
 
 interface Props {
   chapter: ChapterContent;
@@ -364,6 +365,10 @@ export default function TTSBar({
       <div className="mb-4">
         <p className="text-xs uppercase tracking-[0.24em] text-muted">Speech</p>
         <h3 className="font-display text-2xl text-text">Shared Engine</h3>
+      </div>
+
+      <div className="mb-4">
+        <LocalSetupCard />
       </div>
 
         <div className="mb-4 rounded-[1.35rem] border border-border bg-bg/45 px-4 py-3">

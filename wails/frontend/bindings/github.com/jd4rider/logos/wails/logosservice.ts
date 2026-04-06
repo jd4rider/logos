@@ -56,9 +56,15 @@ export function GetLibraryAudio(kind: string, id: number, content: string): $Can
     });
 }
 
+export function GetLocalSetupStatus(): $CancellablePromise<$models.LocalSetupStatus> {
+    return $Call.ByID(552593765).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
 export function GetSpeechSettings(): $CancellablePromise<$models.SpeechSettings> {
     return $Call.ByID(915521964).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -84,13 +90,13 @@ export function IsSpeaking(): $CancellablePromise<boolean> {
 
 export function ListAIModels(): $CancellablePromise<string[]> {
     return $Call.ByID(2763716465).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
 export function ListLibrary(): $CancellablePromise<$models.LibraryEntry[]> {
     return $Call.ByID(3920274908).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -116,6 +122,10 @@ export function ResumeSpeaking(): $CancellablePromise<void> {
     return $Call.ByID(4217012772);
 }
 
+export function RunSetupScript(): $CancellablePromise<void> {
+    return $Call.ByID(495159344);
+}
+
 /**
  * SaveLibraryAudio stores TTS cache key + word durations for a library entry
  * so future reads are instant.  Call after SpeakAIContent returns.
@@ -130,19 +140,19 @@ export function SaveToLibrary(kind: string, title: string, ref: string, content:
 
 export function Search(bibleID: string, query: string, limit: number): $CancellablePromise<api$0.SearchData> {
     return $Call.ByID(3234682073, bibleID, query, limit).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
 export function SetSpeechRate(rate: number): $CancellablePromise<$models.SpeechSettings> {
     return $Call.ByID(1185392639, rate).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
 export function SetVoice(voiceID: string): $CancellablePromise<$models.SpeechSettings> {
     return $Call.ByID(2452478551, voiceID).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -193,11 +203,12 @@ export function StartAIStream(action: string, verseRef: string, verseText: strin
  * jump (seeks in cached PCM on cache hit, falls back to beginning on miss).
  * 
  * Events emitted:
- *   tts:synthesizing — immediately; frontend should show a spinner.
- *   tts:ready        — {startWordIndex int, wordDurationsMs []int}; audio is
- *                      now playing; frontend should schedule word highlights.
- *   tts:done         — playback cancelled or synthesis failed (frontend cleanup).
- *   tts:error        — synthesis error string (frontend shows the message).
+ * 
+ * 	tts:synthesizing — immediately; frontend should show a spinner.
+ * 	tts:ready        — {startWordIndex int, wordDurationsMs []int}; audio is
+ * 	                   now playing; frontend should schedule word highlights.
+ * 	tts:done         — playback cancelled or synthesis failed (frontend cleanup).
+ * 	tts:error        — synthesis error string (frontend shows the message).
  */
 export function StartChapterPlayback(content: string, startWordIndex: number): $CancellablePromise<void> {
     return $Call.ByID(1055706873, content, startWordIndex);
@@ -220,8 +231,9 @@ const $$createType4 = api$0.ChapterContent.createFrom;
 const $$createType5 = api$0.Chapter.createFrom;
 const $$createType6 = $Create.Array($$createType5);
 const $$createType7 = $models.SyncedSpeechPlan.createFrom;
-const $$createType8 = $models.SpeechSettings.createFrom;
-const $$createType9 = $Create.Array($Create.Any);
-const $$createType10 = $models.LibraryEntry.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = api$0.SearchData.createFrom;
+const $$createType8 = $models.LocalSetupStatus.createFrom;
+const $$createType9 = $models.SpeechSettings.createFrom;
+const $$createType10 = $Create.Array($Create.Any);
+const $$createType11 = $models.LibraryEntry.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = api$0.SearchData.createFrom;

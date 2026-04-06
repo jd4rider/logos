@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -18,14 +19,18 @@ import (
 // DefaultHost is the Ollama REST API base URL.
 const DefaultHost = "http://localhost:11434"
 
-// DefaultModel is the best general-purpose model for Bible study tasks.
-const DefaultModel = "llama3.1:8b"
+// DefaultModel is the recommended small local chat model for Logos AI.
+const DefaultModel = "llama3.2:3b"
+
+// DefaultEmbedModel is the recommended Ollama embeddings model for local search.
+const DefaultEmbedModel = "embeddinggemma"
 
 // Client talks to a local Ollama instance.
 type Client struct {
-	host   string
-	model  string
-	http   *http.Client
+	host       string
+	model      string
+	embedModel string
+	http       *http.Client
 }
 
 // NewClient creates a Client, reading OLLAMA_HOST and OLLAMA_MODEL from env.
@@ -38,18 +43,82 @@ func NewClient() *Client {
 	if model == "" {
 		model = DefaultModel
 	}
+	embedModel := os.Getenv("OLLAMA_EMBED_MODEL")
+	if embedModel == "" {
+		embedModel = DefaultEmbedModel
+	}
 	return &Client{
-		host:  host,
-		model: model,
-		http:  &http.Client{Timeout: 5 * time.Minute},
+		host:       host,
+		model:      model,
+		embedModel: embedModel,
+		http:       &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
 // Model returns the configured model name.
 func (c *Client) Model() string { return c.model }
 
+// SetModel overrides the chat/generation model used for future requests.
+func (c *Client) SetModel(model string) {
+	model = strings.TrimSpace(model)
+	if model != "" {
+		c.model = model
+	}
+}
+
+// EmbedModel returns the configured embeddings model name.
+func (c *Client) EmbedModel() string { return c.embedModel }
+
+// SetEmbedModel overrides the embeddings model used for future requests.
+func (c *Client) SetEmbedModel(model string) {
+	model = strings.TrimSpace(model)
+	if model != "" {
+		c.embedModel = model
+	}
+}
+
 // Host returns the configured host.
 func (c *Client) Host() string { return c.host }
+
+// IsInstalled reports whether the Ollama CLI is available on PATH.
+func (c *Client) IsInstalled() bool {
+	_, err := exec.LookPath("ollama")
+	return err == nil
+}
+
+// EnsureRunning starts `ollama serve` in the background when the local host is
+// configured and the daemon is not already reachable.
+func (c *Client) EnsureRunning(ctx context.Context) error {
+	if !c.IsInstalled() {
+		return fmt.Errorf("ollama is not installed")
+	}
+	if c.IsAvailable(ctx) {
+		return nil
+	}
+	if c.host != DefaultHost {
+		return fmt.Errorf("ollama not reachable at %s", c.host)
+	}
+	cmd := exec.CommandContext(ctx, "ollama", "serve")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if c.IsAvailable(ctx) {
+			return nil
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("ollama started but did not become ready in time")
+}
 
 // IsAvailable checks if Ollama is reachable and the model is available.
 func (c *Client) IsAvailable(ctx context.Context) bool {
@@ -92,12 +161,53 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// PullModel downloads a model into the local Ollama store.
+func (c *Client) PullModel(ctx context.Context, model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("model name is required")
+	}
+
+	body, _ := json.Marshal(struct {
+		Name   string `json:"name"`
+		Stream bool   `json:"stream"`
+	}{
+		Name:   model,
+		Stream: false,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		payload, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+
+	var result struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && strings.TrimSpace(result.Error) != "" {
+		return fmt.Errorf("ollama pull: %s", result.Error)
+	}
+	return nil
+}
+
 // generateRequest is the payload for /api/generate.
 type generateRequest struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	Stream  bool   `json:"stream"`
-	System  string `json:"system,omitempty"`
+	Model   string   `json:"model"`
+	Prompt  string   `json:"prompt"`
+	Stream  bool     `json:"stream"`
+	System  string   `json:"system,omitempty"`
 	Options *Options `json:"options,omitempty"`
 }
 
@@ -112,6 +222,15 @@ type Options struct {
 type generateChunk struct {
 	Response string `json:"response"`
 	Done     bool   `json:"done"`
+}
+
+type embedRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embedResponse struct {
+	Embeddings [][]float64 `json:"embeddings"`
 }
 
 // Generate calls /api/generate and streams tokens to the returned channel.
@@ -189,4 +308,43 @@ func (c *Client) GenerateFull(ctx context.Context, system, prompt string, opts *
 		return sb.String(), err
 	}
 	return sb.String(), nil
+}
+
+// Embed generates an embeddings vector using the configured Ollama embeddings model.
+func (c *Client) Embed(ctx context.Context, text string) ([]float64, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("embedding text is empty")
+	}
+
+	body, _ := json.Marshal(embedRequest{
+		Model: c.embedModel,
+		Input: []string{text},
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/embed", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		payload, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+
+	var result embedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if len(result.Embeddings) == 0 {
+		return nil, fmt.Errorf("ollama returned no embeddings")
+	}
+	return result.Embeddings[0], nil
 }

@@ -134,6 +134,24 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}" wails3 task linux:create:deb ARCH=amd64
           wails3 task linux:create:appimage ARCH=amd64
 
+      - name: Rename Linux installers
+        run: |
+          shopt -s nullglob
+          debs=(wails/bin/*.deb)
+          appimages=(wails/bin/*.AppImage)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            printf 'Expected exactly one .deb, found %s\n' "${#debs[@]}" >&2
+            ls -la wails/bin >&2 || true
+            exit 1
+          fi
+          if [ "${#appimages[@]}" -ne 1 ]; then
+            printf 'Expected exactly one AppImage, found %s\n' "${#appimages[@]}" >&2
+            ls -la wails/bin >&2 || true
+            exit 1
+          fi
+          mv "${debs[0]}" wails/bin/logos-ai-linux-amd64.deb
+          mv "${appimages[0]}" wails/bin/logos-ai-linux-amd64.AppImage
+
       - name: Create Linux bundle archive
         run: |
           tar -czf wails/bin/logos-ai-linux-amd64-bundle.tar.gz -C wails/bin logos-ai logos
@@ -142,6 +160,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            wails/bin/*.deb
-            wails/bin/*.AppImage
+            wails/bin/logos-ai-linux-amd64.deb
+            wails/bin/logos-ai-linux-amd64.AppImage
             wails/bin/logos-ai-linux-amd64-bundle.tar.gz

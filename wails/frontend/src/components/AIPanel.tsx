@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Events } from '@wailsio/runtime';
 import { LogosService } from '../bindings';
 import type { AIAction, LibraryEntry, SyncedSpeechPlan } from '../types';
+import LocalSetupCard from './LocalSetupCard';
 
 interface Props {
   mode: 'chat' | 'tools';
@@ -527,6 +528,9 @@ export default function AIPanel({
                 Ollama is not running. Start Ollama to enable Logos Chat.
               </div>
             )}
+            <div className="mb-4">
+              <LocalSetupCard />
+            </div>
 
             <div className="rounded-[1.35rem] border border-border bg-surface/55 p-4">
               <div className="flex flex-wrap items-center gap-2">
@@ -653,6 +657,9 @@ export default function AIPanel({
               Ollama is not running. Start Ollama to enable AI tools.
             </div>
           )}
+          <div className="mb-4">
+            <LocalSetupCard />
+          </div>
 
           <div className="rounded-[1.35rem] border border-border bg-surface/55 p-4">
             <div className="flex flex-wrap items-center gap-2">

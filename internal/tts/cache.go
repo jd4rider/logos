@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/jd4rider/logos/internal/appenv"
 )
 
 // CacheMeta is persisted alongside each cached PCM file.
@@ -19,8 +21,8 @@ type CacheMeta struct {
 	VoiceName   string    `json:"voice_name"`
 	Rate        int       `json:"rate"`
 	SampleRate  int       `json:"sample_rate"`
-	TextPreview string    `json:"text_preview"`    // first 80 chars of text
-	TextLen     int       `json:"text_len"`        // full text length
+	TextPreview string    `json:"text_preview"` // first 80 chars of text
+	TextLen     int       `json:"text_len"`     // full text length
 	WordCount   int       `json:"word_count"`
 	DurationMs  int64     `json:"duration_ms"`
 	PCMBytes    int       `json:"pcm_bytes"`
@@ -31,12 +33,12 @@ type CacheMeta struct {
 
 // CacheStats summarises the current state of the audio cache.
 type CacheStats struct {
-	Entries      int
-	TotalBytes   int64
-	TotalHits    int
-	OldestEntry  time.Time
-	NewestEntry  time.Time
-	MaxBytes     int64
+	Entries     int
+	TotalBytes  int64
+	TotalHits   int
+	OldestEntry time.Time
+	NewestEntry time.Time
+	MaxBytes    int64
 }
 
 // AudioCache stores synthesised PCM audio keyed by a hash of
@@ -50,10 +52,9 @@ type AudioCache struct {
 
 const defaultMaxCacheBytes = 500 * 1024 * 1024 // 500 MB
 
-// NewAudioCache creates (or re-opens) the cache in ~/.cache/logos/tts/.
+// NewAudioCache creates (or re-opens) the audio cache in the per-user cache dir.
 func NewAudioCache() *AudioCache {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".cache", "logos", "tts")
+	dir := filepath.Join(appenv.CacheDir(), "tts")
 	_ = os.MkdirAll(dir, 0o755)
 	return &AudioCache{dir: dir, maxBytes: defaultMaxCacheBytes}
 }

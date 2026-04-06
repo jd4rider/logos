@@ -110,6 +110,55 @@ export class LibraryEntry {
     }
 }
 
+export class LocalSetupStatus {
+    "needsSetup": boolean;
+    "pythonReady": boolean;
+    "piperReady": boolean;
+    "kokoroReady": boolean;
+    "ollamaInstalled": boolean;
+    "ollamaRunning": boolean;
+    "chatModel": string;
+    "embedModel": string;
+
+    /** Creates a new LocalSetupStatus instance. */
+    constructor($$source: Partial<LocalSetupStatus> = {}) {
+        if (!("needsSetup" in $$source)) {
+            this["needsSetup"] = false;
+        }
+        if (!("pythonReady" in $$source)) {
+            this["pythonReady"] = false;
+        }
+        if (!("piperReady" in $$source)) {
+            this["piperReady"] = false;
+        }
+        if (!("kokoroReady" in $$source)) {
+            this["kokoroReady"] = false;
+        }
+        if (!("ollamaInstalled" in $$source)) {
+            this["ollamaInstalled"] = false;
+        }
+        if (!("ollamaRunning" in $$source)) {
+            this["ollamaRunning"] = false;
+        }
+        if (!("chatModel" in $$source)) {
+            this["chatModel"] = "";
+        }
+        if (!("embedModel" in $$source)) {
+            this["embedModel"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LocalSetupStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LocalSetupStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LocalSetupStatus($$parsedSource as Partial<LocalSetupStatus>);
+    }
+}
+
 export class SpeechSettings {
     "available": boolean;
     "engine": string;

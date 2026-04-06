@@ -9,6 +9,7 @@ export {
 export {
     BibleSummary,
     LibraryEntry,
+    LocalSetupStatus,
     SpeechSettings,
     SyncedSpeechPlan,
     VoiceOption

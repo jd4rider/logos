@@ -7,6 +7,7 @@ import SearchPanel from './components/SearchPanel';
 import TTSBar from './components/TTSBar';
 import AIPanel from './components/AIPanel';
 import ImporterModal from './components/ImporterModal';
+import LocalSetupCard from './components/LocalSetupCard';
 import { languageLabel, languageOptions } from './lib/languages';
 
 const dragRegion = { WebkitAppRegion: 'drag' } as unknown as CSSProperties;
@@ -729,6 +730,7 @@ export default function App() {
               />
             ) : (
               <>
+                <LocalSetupCard />
                 {currentChapter && (
                   <section className="rounded-[1.75rem] border border-border/80 bg-bg/40 p-5 shadow-panel">
                     <div>

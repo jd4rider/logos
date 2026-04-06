@@ -221,7 +221,7 @@ func (s *LogosService) Search(bibleID, query string, limit int) (api.SearchData,
 }
 
 func (s *LogosService) GetSpeechSettings() SpeechSettings {
-	voices := s.ttsEngine.ListVoices()
+	voices := s.ttsEngine.RefreshVoices()
 	options := make([]VoiceOption, len(voices))
 	for i, voice := range voices {
 		options[i] = makeVoiceOption(voice)
