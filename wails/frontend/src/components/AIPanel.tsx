@@ -4,6 +4,16 @@ import { LogosService } from '../bindings';
 import type { AIAction, LibraryEntry, SyncedSpeechPlan } from '../types';
 import LocalSetupCard from './LocalSetupCard';
 
+const SLASH_COMMANDS = [
+  { cmd: '/devotional', description: 'Write a devotional for this passage' },
+  { cmd: '/sermon',     description: 'Build a sermon outline for this passage' },
+  { cmd: '/explain',    description: 'Get a pastoral overview of this passage' },
+  { cmd: '/save',       description: 'Save the current output to your library' },
+  { cmd: '/pdf',        description: 'Export the current output as a PDF' },
+] as const;
+
+type SlashCmd = typeof SLASH_COMMANDS[number]['cmd'];
+
 interface Props {
   mode: 'chat' | 'tools';
   verseRef: string;
@@ -152,15 +162,24 @@ export default function AIPanel({
   const [starting, setStarting] = useState(false);
   const [activeWord, setActiveWord] = useState(-1);
   const [precaching, setPrecaching] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
+  const [savedToast, setSavedToast] = useState(false);
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashMenuIndex, setSlashMenuIndex] = useState(0);
+  const [slashFilter, setSlashFilter] = useState('');
 
   const sessionRef = useRef(0);
   const timersRef = useRef<number[]>([]);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<ChatMessage[]>([]);
   const streamingTextRef = useRef('');
   const modeRef = useRef(mode);
   const currentActionRef = useRef<AIAction | 'chat' | null>(null);
   const currentLabelRef = useRef('Logos Chat');
+  const hasCommittedRef = useRef(false);
+  const savedToastTimerRef = useRef<number | undefined>(undefined);
+  const verseRefRef = useRef(verseRef);
 
   function clearHighlightTimers() {
     timersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -198,8 +217,12 @@ export default function AIPanel({
     }
   }
 
-  function commitStreamingMessage() {
+  function commitStreamingMessage(reason: 'done' | 'stopped') {
+    if (hasCommittedRef.current) return;
+    hasCommittedRef.current = true;
+
     const finalText = streamingTextRef.current.trim();
+    const action = currentActionRef.current;
     if (!finalText) {
       setStreaming(false);
       setStreamingText('');
@@ -212,7 +235,7 @@ export default function AIPanel({
       role: 'assistant',
       content: finalText,
       label: currentLabelRef.current,
-      action: currentActionRef.current ?? 'chat',
+      action: action ?? 'chat',
     };
 
     if (modeRef.current === 'chat') {
@@ -223,11 +246,16 @@ export default function AIPanel({
       });
     }
     setSelectedOutput(finalText);
+    setIsSaved(false);
     setPrecaching(true);
     setStreaming(false);
     setStreamingText('');
     streamingTextRef.current = '';
     void LogosService.StartAIPrecache(finalText).then(() => setPrecaching(false)).catch(() => setPrecaching(false));
+
+    if (reason === 'done' && (action === 'devotional' || action === 'sermon')) {
+      void autoSaveOutput(action, finalText, verseRefRef.current);
+    }
   }
 
   useEffect(() => {
@@ -239,12 +267,16 @@ export default function AIPanel({
   }, [mode]);
 
   useEffect(() => {
+    verseRefRef.current = verseRef;
+  }, [verseRef]);
+
+  useEffect(() => {
     const unsubToken = Events.On('ai:token', (event) => {
       streamingTextRef.current += event.data as string;
       setStreamingText(streamingTextRef.current);
     });
     const unsubDone = Events.On('ai:done', () => {
-      commitStreamingMessage();
+      commitStreamingMessage('done');
     });
     const unsubError = Events.On('ai:error', (event) => {
       setError(event.data as string);
@@ -293,6 +325,9 @@ export default function AIPanel({
     setSelectedOutput('');
     setSelectedEntry(null);
     setError(null);
+    setIsSaved(false);
+    setSavedToast(false);
+    setSlashMenuOpen(false);
     currentActionRef.current = null;
     currentLabelRef.current = 'Logos Chat';
     streamingTextRef.current = '';
@@ -311,9 +346,12 @@ export default function AIPanel({
     stopReadingState();
     setPrecaching(false);
     setSelectedOutput('');
+    setIsSaved(false);
+    setSavedToast(false);
     setStreaming(true);
     setStreamingText('');
     streamingTextRef.current = '';
+    hasCommittedRef.current = false;
     setCurrentAction(action);
     setCurrentLabel(label);
     currentActionRef.current = action;
@@ -360,7 +398,7 @@ export default function AIPanel({
 
   function stopStream() {
     void LogosService.StopAIStream();
-    commitStreamingMessage();
+    commitStreamingMessage('stopped');
   }
 
   async function handleReadAloud(text: string, entryKind?: string, entryId?: number) {
@@ -418,18 +456,27 @@ export default function AIPanel({
     void LogosService.StartAIPrecache(entry.content).catch(() => undefined);
   }
 
-  async function saveResult() {
-    if (!selectedOutput) {
-      return;
+  async function autoSaveOutput(action: AIAction | 'chat' | null, finalText: string, ref: string) {
+    setIsSaved(true);
+    setSavedToast(true);
+    if (savedToastTimerRef.current !== undefined) {
+      window.clearTimeout(savedToastTimerRef.current);
     }
-
+    savedToastTimerRef.current = window.setTimeout(() => setSavedToast(false), 2500);
     await LogosService.SaveToLibrary(
-      outputKindForAction(currentActionRef.current),
-      outputTitleForAction(currentActionRef.current, verseRef),
-      verseRef,
-      selectedOutput,
+      outputKindForAction(action),
+      outputTitleForAction(action, ref),
+      ref,
+      finalText,
       'ollama',
     );
+  }
+
+  async function saveResult() {
+    if (!selectedOutput || isSaved) {
+      return;
+    }
+    await autoSaveOutput(currentActionRef.current, selectedOutput, verseRef);
   }
 
   async function exportPDF(kind: string, title: string, ref: string, content: string) {
@@ -468,9 +515,74 @@ export default function AIPanel({
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (slashMenuOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSlashMenuIndex((i) => Math.min(i + 1, filteredSlashCommands.length - 1));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSlashMenuIndex((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const selected = filteredSlashCommands[slashMenuIndex];
+        if (selected) void handleSlashCommand(selected.cmd);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSlashMenuOpen(false);
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void sendChatMessage();
+    }
+  }
+
+  async function handleSlashCommand(cmd: SlashCmd) {
+    setSlashMenuOpen(false);
+    setChatInput('');
+    switch (cmd) {
+      case '/devotional':
+      case '/sermon':
+      case '/explain': {
+        const actionMap: Record<string, AIAction> = {
+          '/devotional': 'devotional',
+          '/sermon': 'sermon',
+          '/explain': 'explain_chapter',
+        };
+        const action = actionMap[cmd] as AIAction;
+        const userMsg: ChatMessage = {
+          id: createMessageId(),
+          role: 'user',
+          content: cmd,
+          label: 'You',
+          action: 'chat',
+        };
+        const nextConversation = [...chatMessagesRef.current, userMsg];
+        setChatMessages(nextConversation);
+        chatMessagesRef.current = nextConversation;
+        await beginStream(action, actionLabel[action], '');
+        break;
+      }
+      case '/save':
+        await saveResult();
+        break;
+      case '/pdf':
+        if (selectedOutput) {
+          await exportPDF(
+            outputKindForAction(currentActionRef.current),
+            outputTitleForAction(currentActionRef.current, verseRef),
+            verseRef,
+            selectedOutput,
+          );
+        }
+        break;
     }
   }
 
@@ -481,6 +593,9 @@ export default function AIPanel({
     sermon: 'Sermon Outline',
     ask: 'Logos Chat',
   };
+  const filteredSlashCommands = SLASH_COMMANDS.filter((c) =>
+    c.cmd.startsWith(slashFilter),
+  );
   const isThinking = streaming && streamingText.trim().length === 0;
   const showLibraryBack = mode === 'tools' && view === 'library';
 
@@ -603,15 +718,55 @@ export default function AIPanel({
 
           <div className="border-t border-border/60 bg-bg/65 p-4 backdrop-blur-xl">
             {error && <p className="mb-3 text-xs text-red-400">{error}</p>}
-            <div className="rounded-[1.35rem] border border-border bg-bg/45 p-3">
+            {savedToast && (
+              <div className="mb-3 flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-4 py-2 text-xs text-green-300">
+                <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586 4.707 9.293a1 1 0 00-1.414 1.414l4 4a1 1 0 001.414 0l8-8a1 1 0 000-1.414z" clipRule="evenodd" />
+                </svg>
+                Saved to library
+              </div>
+            )}
+            <div className="relative rounded-[1.35rem] border border-border bg-bg/45 p-3">
+              {slashMenuOpen && filteredSlashCommands.length > 0 && (
+                <div className="absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-[1.2rem] border border-border bg-bg/95 shadow-xl backdrop-blur-xl">
+                  {filteredSlashCommands.map((item, i) => (
+                    <button
+                      key={item.cmd}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        void handleSlashCommand(item.cmd);
+                      }}
+                      className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition ${
+                        i === slashMenuIndex ? 'bg-gold/15' : 'hover:bg-surface/60'
+                      }`}
+                    >
+                      <span className="w-24 shrink-0 font-mono text-xs font-semibold text-gold/90">{item.cmd}</span>
+                      <span className="text-xs text-muted">{item.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <label className="mb-2 block text-[0.72rem] uppercase tracking-[0.18em] text-muted">
                 Continue The Conversation
               </label>
               <textarea
+                ref={composerRef}
                 className="min-h-[94px] w-full resize-none rounded-[1rem] border border-border bg-surface/60 px-4 py-3 text-sm text-text placeholder:text-muted focus:border-gold/50 focus:outline-none"
-                placeholder="Ask Logos about this passage..."
+                placeholder="Ask Logos about this passage, or type / for commands..."
                 value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  setChatInput(val);
+                  const slashMatch = val.match(/^(\/\S*)$/);
+                  if (slashMatch) {
+                    setSlashFilter(slashMatch[1].toLowerCase());
+                    setSlashMenuIndex(0);
+                    setSlashMenuOpen(true);
+                  } else {
+                    setSlashMenuOpen(false);
+                  }
+                }}
                 onKeyDown={handleComposerKeyDown}
               />
               <div className="mt-3 flex items-center justify-between gap-3">
@@ -623,7 +778,7 @@ export default function AIPanel({
                   ) : streaming ? (
                     'Generating response...'
                   ) : (
-                    'Enter to send. Shift+Enter for a new line.'
+                    'Enter to send • / for commands'
                   )}
                 </p>
                 {streaming ? (
@@ -638,7 +793,7 @@ export default function AIPanel({
                   <button
                     type="button"
                     onClick={() => void sendChatMessage()}
-                    disabled={!chatInput.trim() || !aiAvailable}
+                    disabled={!chatInput.trim() || !aiAvailable || slashMenuOpen}
                     className="rounded-full border border-gold/40 bg-gold/10 px-4 py-2 text-sm text-gold transition hover:bg-gold/20 disabled:opacity-40"
                   >
                     Send
@@ -709,6 +864,14 @@ export default function AIPanel({
           </div>
 
           {error && <p className="mt-4 text-xs text-red-400">{error}</p>}
+          {savedToast && (
+            <div className="mt-4 flex items-center gap-2 rounded-full border border-green-500/30 bg-green-500/10 px-4 py-2 text-xs text-green-300">
+              <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414 0L8 12.586 4.707 9.293a1 1 0 00-1.414 1.414l4 4a1 1 0 001.414 0l8-8a1 1 0 000-1.414z" clipRule="evenodd" />
+              </svg>
+              Saved to library
+            </div>
+          )}
 
           <div className="mt-4 space-y-4">
             {!streaming && !selectedOutput && (
@@ -768,9 +931,14 @@ export default function AIPanel({
                   <button
                     type="button"
                     onClick={() => void saveResult()}
-                    className="flex-1 rounded-full border border-accent/40 bg-accent/10 py-2 text-sm text-accent transition hover:bg-accent/20"
+                    disabled={isSaved}
+                    className={`flex-1 rounded-full border py-2 text-sm transition ${
+                      isSaved
+                        ? 'cursor-default border-green-500/40 bg-green-500/10 text-green-300'
+                        : 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/20'
+                    }`}
                   >
-                    Save
+                    {isSaved ? 'Saved ✓' : 'Save'}
                   </button>
                   <button
                     type="button"
